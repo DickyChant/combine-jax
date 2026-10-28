@@ -1185,7 +1185,7 @@ The public bundle constructor still copies caller-owned arrays. Both paths
 enforce the same numeric schema, C-contiguous layout and structure checksum;
 no template precision or model contents change.
 
-## MultiDimFit methods (experimental; native law validation pending)
+## MultiDimFit methods (1D law gate passed; 2D/impacts validation ongoing)
 
 The public `multidim` command (`-M MultiDimFit`) accepts explicit nominal Asimov
 generation values and `-t -1`. Native v10 generates that dataset, including its

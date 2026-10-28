@@ -102,22 +102,24 @@ needed. Shared software and credentials follow the existing inference workflow.
 
 `combine-jax multidim` (also `-M MultiDimFit`) provides grid scans, profile
 intervals and nuisance impacts. Counting-card comparisons against native v10
-pass; the larger model validations through law are still pending. These methods
+pass. A four-point 1D Asimov scan also passes through law against native v10;
+2D and nuisance-impact comparisons are ongoing. These methods
 require `--toys -1` and an explicit generation value for every POI. They do not
 read observed data or use a post-fit snapshot.
 
 ```bash
 combine-jax multidim --workspace workspace.root --poi r --toys -1 \
-  --setParameters r=0 --setParameterRanges r=-1,3 \
-  --algo grid --gridPoints 5 --backend gpu
+  --setParameters r=0 --setParameterRanges r=0,3 \
+  --algo grid --gridPoints 4 --backend gpu
 
 combine-jax multidim --workspace workspace.root --poi r --toys -1 \
-  --setParameters r=0 --setParameterRanges r=-1,3 \
+  --setParameters r=0 --setParameterRanges r=0,3 \
   --algo batch-impacts --parameters r,lumi,background_norm --backend gpu \
   --output impacts.root
 ```
 
-Use the parameter names from the actual workspace. Two-dimensional grids accept
+Use the parameter names from the actual workspace and ranges where the native
+likelihood is defined. Invalid points remain explicit failures. Two-dimensional grids accept
 `--poi first,second`, one range and grid count per axis, and `--firstPoint` /
 `--lastPoint` for partitioning. Each conditional fit starts from the saved global
 minimum. Batched impacts reuse the import, global fit and conditional executable;
@@ -134,14 +136,14 @@ law run MergeLikelihoodScan \
   --datacards /path/to/datacard.txt --version asimov_scan \
   --hh-model hhvv_model.model_default --pois r_hhvv \
   --parameter-values MX=4000:r_hhvv=0 --frozen-parameters MX \
-  --scan-parameters r_hhvv,-1,3,5 --scan-backend jax \
+  --scan-parameters r_hhvv,0,3,4 --scan-backend jax \
   --LikelihoodScan-workflow htcondor --workers 1
 
 law run MergePullsAndImpacts \
   --datacards /path/to/datacard.txt --version asimov_impacts \
   --hh-model hhvv_model.model_default --pois r_hhvv \
   --parameter-values MX=4000:r_hhvv=0 --frozen-parameters MX \
-  --parameter-ranges r_hhvv=-10,10 --impacts-backend jax \
+  --parameter-ranges r_hhvv=0,10 --impacts-backend jax \
   --PullsAndImpacts-workflow local --JAXImpactBatch-workflow htcondor --workers 1
 ```
 
