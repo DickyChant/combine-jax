@@ -1170,3 +1170,9 @@ callers; a caller retaining its model retains that memory. Static allocation
 and aggregate RSS guards are unchanged. RSS failures retain process-level
 measurements and diagnostic PSS/private-page counts; PSS does not replace the
 RSS acceptance rule.
+
+Neutral-model archive loading streams the checksum and retains each freshly
+decompressed numeric array as immutable, avoiding a second complete host copy.
+The public bundle constructor still copies caller-owned arrays. Both paths
+enforce the same numeric schema, C-contiguous layout and structure checksum;
+no template precision or model contents change.

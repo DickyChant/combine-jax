@@ -13,6 +13,11 @@ def json_hash(value):
                                     allow_nan=False).encode()).hexdigest()
 
 
+def file_hash(path):
+    with Path(path).open('rb') as stream:
+        return hashlib.file_digest(stream, 'sha256').hexdigest()
+
+
 @dataclass(frozen=True)
 class TensorBundle:
     metadata: dict
@@ -76,7 +81,7 @@ class TensorBundle:
         np.savez_compressed(path, **self.arrays)
         document = dict(metadata=self.metadata, structure_key=self.structure_key,
                         metadata_sha256=json_hash(self.metadata),
-                        arrays_sha256=hashlib.sha256(path.read_bytes()).hexdigest())
+                        arrays_sha256=file_hash(path))
         (directory/'model.json').write_text(json.dumps(document, indent=2, allow_nan=False)+'\n')
 
     @classmethod
@@ -86,10 +91,21 @@ class TensorBundle:
         if json_hash(document['metadata']) != document['metadata_sha256']:
             raise ValueError('Tensor metadata checksum mismatch')
         path = directory/'arrays.npz'
-        if hashlib.sha256(path.read_bytes()).hexdigest() != document['arrays_sha256']:
+        if file_hash(path) != document['arrays_sha256']:
             raise ValueError('Tensor array archive checksum mismatch')
-        with np.load(path, allow_pickle=False) as arrays:
-            result = cls(document['metadata'], {n:arrays[n] for n in arrays.files})
+        # NPZ members are newly owned arrays. Freezing them here avoids keeping
+        # a second complete model while the public constructor defensively
+        # copies external buffers. Normalize one member at a time to C order;
+        # the internal factory still validates numeric dtype, names and schema.
+        buffers = {}
+        with np.load(path, allow_pickle=False) as archive:
+            for name in archive.files:
+                array = archive[name]
+                if not array.flags.c_contiguous:
+                    array = np.ascontiguousarray(array)
+                array.flags.writeable = False
+                buffers[name] = array
+        result = cls._from_frozen(document['metadata'], buffers)
         if result.structure_key != document['structure_key']:
             raise ValueError('Tensor structure key mismatch')
         return result
