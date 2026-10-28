@@ -1155,3 +1155,10 @@ initial BFGS metric from preventing all secant updates. It does not change
 starting values, physical bounds, float64 precision, EDM acceptance, penalties,
 or reported uncertainties. The fitter remains BFGS with the native stopping
 threshold, not a claimed identical Minuit2 trajectory or fallback implementation.
+
+The expected-limit profiler constructs the full and compact discrete-channel
+objectives once and shares those immutable closures between global and
+conditional solvers. This avoids repeated host-side array validation; model
+buffers, numerical kernels and stopping rules are unchanged. After the global
+fit, its parameter vector is exported once into the receipt for explicit
+crossing diagnostics. Conditional fits retain their device-resident warm starts.

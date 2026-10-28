@@ -127,6 +127,18 @@ def test_discrete_device_fit_finds_frozen_branch_envelope(multipdf_path):
     assert result['discrete_indices'][0]==np.argmin(references)
     assert result['short_fits']>=2 and result['continuous_fits']>=2
     np.testing.assert_allclose(result['value'],min(references),rtol=0,atol=1e-6)
+    # Sharing the exact objectives across solver kinds must preserve the entire
+    # numerical result, including every candidate and evaluation count.
+    from combine_jax.tensor.discrete import make_discrete_channels_function
+    reused=jax.jit(make_discrete_fit_function(model,
+        _full_function=make_model_function(model,binned_gradient='structural_sequential'),
+        _channel_function=make_discrete_channels_function(model),
+        stopping_criterion='edm',edm_validation='estimated',edm_tolerance=1e-8))
+    repeated=jax.device_get(reused({n:c[n] for n in COORDINATE_FIELDS},
+        {n:short[n] for n in COORDINATE_FIELDS},jax.device_put(dict(model.arrays))))
+    assert repeated.keys()==result.keys()
+    for name in result:
+        np.testing.assert_array_equal(repeated[name],result[name])
 
 
 def test_shape_scale_floor_preserves_physical_problem():

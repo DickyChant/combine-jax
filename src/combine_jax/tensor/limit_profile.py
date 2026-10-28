@@ -80,6 +80,9 @@ class LimitProfiler:
             self.arrays.update(jax.device_put({'discrete_fit__'+n:short[n] for n in COORDINATE_FIELDS}))
         self.warm = jax.device_put(point)
         function = make_model_function(model, binned_gradient='structural_sequential')
+        if self.discrete:
+            from .discrete import make_discrete_channels_function
+            short_function = make_discrete_channels_function(model)
         self.executables = {}
         self.compiler_memory = {}
         self.timings = dict(prepare_seconds=time.perf_counter()-start, compile_seconds=0., lower_seconds=0.,
@@ -98,7 +101,8 @@ class LimitProfiler:
                 edm_tolerance=.002*.1*up,edm_validation='estimated')
             if self.discrete:
                 from .discrete_fit import make_discrete_fit_function
-                discrete_fit=make_discrete_fit_function(model,**options)
+                discrete_fit=make_discrete_fit_function(model,_full_function=function,
+                    _channel_function=short_function,**options)
                 def scan(coordinates,arrays,discrete_fit=discrete_fit):
                     result=discrete_fit({n:v[0] for n,v in coordinates.items()},
                         {n:arrays['discrete_fit__'+n] for n in COORDINATE_FIELDS},arrays)

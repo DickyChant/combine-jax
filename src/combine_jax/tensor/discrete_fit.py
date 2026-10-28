@@ -27,7 +27,8 @@ def condition_shape_scales(coordinates,arrays):
     return recenter({**coordinates,'scale':scale},point)
 
 
-def make_discrete_fit_function(model,*,discrete_tolerance=.001,maximum_discrete_iterations=15,**fit_options):
+def make_discrete_fit_function(model,*,discrete_tolerance=.001,maximum_discrete_iterations=15,
+                               _full_function=None,_channel_function=None,**fit_options):
     """Return fit(full_coordinates, short_coordinates, arrays), for one outer JIT.
 
     Match the native short-combination ordering and reset only the parameters
@@ -45,8 +46,13 @@ def make_discrete_fit_function(model,*,discrete_tolerance=.001,maximum_discrete_
     if 'discrete_profile' not in model.metadata:raise ValueError('Model lacks discrete profile maps')
     if discrete_tolerance<=0 or maximum_discrete_iterations<1:raise ValueError('Invalid discrete convergence policy')
     if 'covariance' in fit_options:raise ValueError('Discrete envelope does not define a covariance across index switches')
-    full=make_model_function(model,binned_gradient='structural_sequential')
-    small=make_discrete_channels_function(model)
+    # The limit driver shares these immutable objective closures between its
+    # global and conditional solvers. Rebuilding them revalidates large model
+    # arrays on the host; it changes neither objective nor fit coordinates.
+    full=(_full_function if _full_function is not None else
+        make_model_function(model,binned_gradient='structural_sequential'))
+    small=(_channel_function if _channel_function is not None else
+        make_discrete_channels_function(model))
     def objective(theta,payload):
         point=jnp.where(payload['active'],theta,payload['reference'])
         return full(point,payload['arrays'])
