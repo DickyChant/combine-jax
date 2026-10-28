@@ -6,6 +6,7 @@ build-backend = "setuptools.build_meta"
 name = "combine-jax"
 version = "0.1.0"
 description = "Registry-driven JAX likelihoods for CMS Combine v11"
+license = "Apache-2.0"
 requires-python = ">=3.11"
 dependencies = ["jax>=0.4.30", "numpy", "scipy", "iminuit"]
 

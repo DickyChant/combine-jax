@@ -103,3 +103,7 @@ pytest -q tests/test_asymptotic_statistics.py tests/test_runtime_limits.py
 Legacy benchmark scripts are research utilities, not installation prerequisites.
 Agreement and performance are dataset/configuration dependent; validate each new
 model against its native reference before making a numerical or speed claim.
+
+## License
+
+Apache License 2.0, the same as CMS Combine. See [LICENSE](LICENSE).
