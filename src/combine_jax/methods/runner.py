@@ -27,6 +27,12 @@ def run_expected_model(model, poi, *, options=None, r_max=None, max_iterations=1
     start = time.perf_counter()
     minimum = profiler.global_minimum()
     result = expected_limits(profiler, minimum, profiler.r_max, options=options)
+    from .root_output import audit_crossings
+    if any(row['status'] != 'resolved' for row in audit_crossings(result)):
+        # Keep the native stepping result unchanged. Two additional conditional
+        # fits distinguish a lost nuisance branch from a missing search bracket;
+        # neither is silently substituted into a limit or denominator.
+        result['unresolved_baseline_diagnostic'] = profiler.diagnose_global_baseline()
     elapsed = time.perf_counter()-start
     result.update(status='computed_pending_native_validation', method='AsymptoticLimits', poi=poi,
         dataset=provenance, timings={**profiler.timings, 'execution_seconds':elapsed},

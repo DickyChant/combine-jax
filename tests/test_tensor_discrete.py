@@ -152,3 +152,21 @@ def test_shape_scale_floor_preserves_physical_problem():
         np.testing.assert_array_equal(updated[name],c[name])
     for side in ('lower','upper'):
         np.testing.assert_allclose(c['reference']+updated[side]*updated['scale'],c['physical_'+side],rtol=0,atol=1e-14)
+
+
+def test_baseline_diagnostics_restore_discrete_choices(multipdf_path):
+    from combine_jax.tensor.limit_profile import LimitProfiler
+    with open_workspace(multipdf_path) as workspace:
+        model=from_workspace(workspace,discrete_policy='profile')
+    profiler=LimitProfiler(model,'r',global_up=.5)
+    minimum=profiler.global_minimum()
+    global_indices=np.asarray(profiler._global_indices).copy()
+    # A later crossing can have a different branch. Diagnostics must start
+    # from the global branch and leave that later branch unchanged afterwards.
+    profiler.arrays['binned__discrete_indices']=(profiler._global_indices+1)%2
+    later=np.asarray(profiler.arrays['binned__discrete_indices']).copy()
+    diagnostic=profiler.diagnose_global_baseline()
+    assert diagnostic['status']=='complete'
+    np.testing.assert_allclose(diagnostic['points'][0]['seed_nll'],minimum,rtol=0,atol=1e-10)
+    np.testing.assert_array_equal(profiler._global_indices,global_indices)
+    np.testing.assert_array_equal(profiler.arrays['binned__discrete_indices'],later)

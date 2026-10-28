@@ -1163,6 +1163,14 @@ buffers, numerical kernels and stopping rules are unchanged. After the global
 fit, its parameter vector is exported once into the receipt for explicit
 crossing diagnostics. Conditional fits retain their device-resident warm starts.
 
+If an expected crossing is unresolved, the driver additionally profiles at the
+fitted POI and at zero, each independently seeded from the saved global nuisance
+vector and discrete choices. It records the seed NLL and conditional result,
+then restores the usual warm-start state. These diagnostics reuse the compiled
+solvers and unchanged stopping rules. They never replace the reported baseline,
+crossing trace or limit; failed fits remain explicit and an unresolved crossing
+remains unavailable. The additional calls count in execution time and fit totals.
+
 The runtime passes temporary neutral-model ownership into the expected-limit
 driver. It prepares device inputs/objective closures, releases the host model,
 then compiles. The profiler also supports immediate compilation for existing

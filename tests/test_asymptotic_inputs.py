@@ -61,6 +61,33 @@ def test_limit_rejects_fitter_bound_removal_policy():
         validate_expected_model(model,'r')
 
 
+@pytest.mark.parametrize('plateau', [0., .6])
+def test_unresolved_diagnostic_does_not_replace_limit_or_baseline(monkeypatch, plateau):
+    from combine_jax.tensor import limit_profile
+    from combine_jax.methods.asymptotic import expected_limits
+    from combine_jax.methods.root_output import audit_crossings
+    class Profiler:
+        def __init__(self, *args, **kwargs):
+            self.r_max=10.;self.timings={};self.compiler_memory={};self.records=[]
+        def compile(self): pass
+        def global_minimum(self): return 0.
+        def __call__(self,mu):
+            self.records.append(dict(status=0,function_evaluations=1,gradient_evaluations=1,iteration=1))
+            return plateau+.5*mu*mu
+        def diagnose_global_baseline(self):
+            return dict(used_for_limits=False,status='complete',nll=0.)
+    monkeypatch.setattr(limit_profile,'LimitProfiler',Profiler)
+    reference=expected_limits(Profiler(),0.,10.)
+    result=run_expected_model(model_record(),'r')
+    for name in ('limits','trace','minimum_nll','crossing_reasons'):
+        assert result[name]==reference[name]
+    if plateau:
+        assert result['unresolved_baseline_diagnostic']['nll']==0.
+        assert audit_crossings(result)[0]['limit'] is None
+    else:
+        assert 'unresolved_baseline_diagnostic' not in result
+
+
 def test_fixed_discrete_requires_opt_in_and_matching_preparation():
     model = model_record()
     choices = {'pdf_choice': {'index': 2, 'selected': 'power', 'correction': 1.}}

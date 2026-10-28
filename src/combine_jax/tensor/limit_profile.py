@@ -91,6 +91,9 @@ class LimitProfiler:
         self.timings = dict(prepare_seconds=time.perf_counter()-start, compile_seconds=0., lower_seconds=0.,
                             cache_release_seconds=0.)
         self.records = []
+        self._global_point = None
+        self._global_indices = None
+        self._global_value = None
         self.poi = poi
         # Native expected-limit global minimization uses Up equal to the median
         # NLL crossing, whereas conditional profiles retain Up=0.5.
@@ -194,6 +197,10 @@ class LimitProfiler:
         self.warm = result['values'][0]
         if self.discrete:
             self.arrays['binned__discrete_indices']=result['discrete_indices'][0]
+        if kind == 'global':
+            self._global_point = self.warm
+            self._global_indices = self.arrays.get('binned__discrete_indices')
+            self._global_value = float(summary['value'])
         return float(summary['value'])
 
     def global_minimum(self, initial=None):
@@ -210,6 +217,9 @@ class LimitProfiler:
         return self._accept(result, 'global', None)
 
     def __call__(self, mu):
+        return self._conditional(mu)
+
+    def _conditional(self, mu, kind='conditional'):
         c = self.coordinates['conditional']
         reference = self.warm.at[self.index].set(mu)[None, :]
         free = c['free_indices'][0]
@@ -217,7 +227,45 @@ class LimitProfiler:
             'lower': (c['physical_lower']-reference[:, free])/c['scale'],
             'upper': (c['physical_upper']-reference[:, free])/c['scale']}
         result = self._jax.block_until_ready(self.executables['conditional'](dynamic, self.arrays))
-        return self._accept(result, 'conditional', float(mu))
+        return self._accept(result, kind, float(mu))
+
+    def diagnose_global_baseline(self):
+        """Probe an unresolved crossing from the saved global solution.
+
+        These conditional fits do not replace the statistical result or its
+        baseline. Each starts independently at the global nuisance vector and
+        category choices. Restore the ordinary warm start afterwards. Reuse
+        existing executables, with unchanged bounds, EDM and iteration budget.
+        """
+        if self._global_point is None:
+            raise RuntimeError('A converged global fit is required for baseline diagnostics')
+        saved_point = self.warm
+        saved_indices = self.arrays.get('binned__discrete_indices')
+        mu_hat = float(self._global_point[self.index])
+        report = dict(global_mu=mu_hat, global_nll=self._global_value,
+            status='complete', points=[], used_for_limits=False)
+        try:
+            for label, mu in [('global_poi', mu_hat), ('zero_poi', 0.)]:
+                self.warm = self._global_point
+                if self.discrete:
+                    self.arrays['binned__discrete_indices'] = self._global_indices
+                row = dict(label=label, mu=mu, seed='saved_global_solution',
+                           seed_nll=self.unprofiled(mu))
+                report['points'].append(row)
+                try:
+                    value = self._conditional(mu, kind='diagnostic_'+label)
+                    row.update(status='converged', nll=value,
+                        delta_from_global=value-self._global_value,
+                        fit_record=len(self.records)-1)
+                except RuntimeError as exc:
+                    row.update(status='failed', error=str(exc))
+                    report['status'] = 'failed'
+                    break
+        finally:
+            self.warm = saved_point
+            if self.discrete:
+                self.arrays['binned__discrete_indices'] = saved_indices
+        return report
 
     def unprofiled(self, mu):
         return float(self.executables['unprofiled'](self.warm.at[self.index].set(mu), self.arrays))

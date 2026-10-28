@@ -43,6 +43,28 @@ def test_selected_compilations_and_cache_release_preserve_fits(counting_path):
     np.testing.assert_array_equal(reference.unprofiled(.4), expected[-1])
 
 
+def test_baseline_diagnostic_uses_global_seed_and_restores_warm_start(counting_path):
+    with open_workspace(counting_path) as workspace:
+        model = from_workspace(workspace, 'tests/cards/counting.txt')
+    profiler = LimitProfiler(model, 'r', global_up=.5)
+    with np.testing.assert_raises_regex(RuntimeError, 'converged global'):
+        profiler.diagnose_global_baseline()
+    minimum = profiler.global_minimum()
+    global_point = profiler.point().copy()
+    profiler(.6)
+    warm_point = profiler.point().copy()
+    record_count = len(profiler.records)
+    diagnostic = profiler.diagnose_global_baseline()
+    assert diagnostic['status'] == 'complete' and not diagnostic['used_for_limits']
+    assert diagnostic['global_mu'] == global_point[profiler.index]
+    assert len(profiler.records) == record_count+2
+    np.testing.assert_allclose(diagnostic['points'][0]['seed_nll'], minimum, rtol=0, atol=1e-12)
+    assert diagnostic['points'][0]['nll'] <= minimum+1e-10
+    assert [r['kind'] for r in profiler.records[-2:]] == ['diagnostic_global_poi', 'diagnostic_zero_poi']
+    np.testing.assert_array_equal(profiler.point(), warm_point)
+    np.testing.assert_array_equal(profiler._global_point, global_point)
+
+
 def test_deferred_compilation_does_not_retain_the_imported_model(counting_path):
     import gc
     import weakref
