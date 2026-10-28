@@ -28,7 +28,7 @@ def density_children(node):
     if cls=='RooAddPdf':return a['pdfs']
     if cls=='RooProdPdf':return inputs
     if cls=='VerticalInterpPdf':return a['functions']
-    if cls=='RooMultiPdf':return (a['selected'],)
+    if cls=='RooMultiPdf':return a['alternatives'] if a.get('profiled') else (a['selected'],)
     return ()
 
 
@@ -62,6 +62,9 @@ def product_normalizations(name,node,axes,depends):
 
 def operation(op,values,scalars,b,xp=np):
     """Rows have axes (batch, children or coefficients, data)."""
+    if op=='select_pdf':
+        selected=xp.take_along_axis(b['children'],b['choice'][:,None,None],axis=1)[:,0,:]
+        return values[selected]
     if op in ANALYTIC_OPERATIONS:return analytic_operation(op,scalars,b,xp)
     if op in GRID_ANALYTIC_OPERATIONS:
         parameters=values[b['children']]
@@ -112,8 +115,23 @@ def nll_batch(values,scalars,b,xp=np):
     expected=xp.sum(xp.where(b['rate_mask'],scalars[b['rates']],0.),axis=1)
     observed=xp.sum(b['weights'],axis=1)
     density=xp.where(b['weights']==0,1.,values[b['densities']])
+    correction=b['correction']
+    if 'correction_table' in b:
+        correction=correction+xp.sum(xp.take_along_axis(b['correction_table'],
+            b['correction_indices'][:,:,None],axis=2)[:,:,0],axis=1)
     return (-xp.sum(b['weights']*xp.log(density),axis=1)+expected-observed
-        -observed*(xp.log(expected)-xp.log(xp.where(observed>0,observed,1.)))+b['correction'])
+        -observed*(xp.log(expected)-xp.log(xp.where(observed>0,observed,1.)))+correction)
+
+
+def program_fields(batch,arrays):
+    """Bind categorical controls without differentiating or host-copying them."""
+    b={k:arrays[n] for k,n in batch['buffers'].items()}
+    if batch['operation']=='select_pdf':
+        b['choice']=arrays['discrete_indices'][b['category']]
+    if 'correction_table' in b:
+        # Broadcasting is valid in NumPy and JAX take_along_axis.
+        b['correction_indices']=arrays['discrete_indices'][None,:]
+    return b
 
 
 def _stack_records(records):
@@ -144,6 +162,21 @@ def pack_binned_channels(nodes,channels,scalars,*,compact_data=True):
         for child in density_children(nodes[name]):visit(child)
     for ch in channels:
         if not ch.get('masked',False):visit(ch['pdf'])
+    discrete={}
+    for name in sorted(active_pdfs):
+        cls,_,a=nodes[name]
+        if cls!='RooMultiPdf' or not a.get('profiled'):continue
+        category=a['category'];count=len(a['alternatives'])
+        states=nodes[category][2]['states']
+        if sorted(index for _,index in states)!=list(range(count)):
+            raise UnsupportedModelError(f'{name}: MultiPdf requires contiguous category indices matching all alternatives')
+        item=dict(name=category,count=count,initial=a['index'])
+        if category in discrete and discrete[category]!=item:
+            raise UnsupportedModelError(f'{category}: shared MultiPdfs have different index domains')
+        discrete[category]=item
+    discrete=[discrete[name] for name in sorted(discrete)]
+    category_lookup={entry['name']:i for i,entry in enumerate(discrete)}
+    max_choices=max((entry['count'] for entry in discrete),default=0)
     histograms=pack_fast_histograms(nodes,sorted(fast_names),scalars)
     fixed_histograms=set(histograms.metadata['folded_histograms'])
     initial_chunks=[];initial_size=0;records=[];fast_requests=[];fast_bindings=[];cache={};folded=[];dependencies={};grids={};grid_queries=[]
@@ -162,7 +195,7 @@ def pack_binned_channels(nodes,channels,scalars,*,compact_data=True):
         return np.arange(start,initial_size,dtype=np.int32)
     def emit(op,rows,fields,children=(),coef_names=(),label=''):
         output=allocate(rows);depth=1+max((c[2] for c in children),default=-1)
-        is_dynamic=any(c[1] for c in children) or any(n in dynamic for n in coef_names)
+        is_dynamic=op=='select_pdf' or any(c[1] for c in children) or any(n in dynamic for n in coef_names)
         if children:fields['children']=np.stack([c[0] for c in children])
         records.append(dict(op=op,rows=rows,fields=fields,outputs=output,dynamic=is_dynamic,depth=depth,label=label))
         return output,is_dynamic,depth
@@ -208,7 +241,12 @@ def pack_binned_channels(nodes,channels,scalars,*,compact_data=True):
             output=allocate(R);query_name=f'q{len(fast_requests)}'
             fast_requests.append(dict(name=query_name,pdf=name,mode=mode,axes=axes,coordinates=coords))
             fast_bindings.append((output,query_name));result=output,name not in fixed_histograms,0
-        elif cls=='RooMultiPdf':result=request(channel_index,ch,a['selected'],mode,axes)
+        elif cls=='RooMultiPdf':
+            if a.get('profiled'):
+                children=[request(channel_index,ch,n,mode,axes) for n in a['alternatives']]
+                result=emit('select_pdf',R,dict(category=np.array(category_lookup[a['category']],dtype=np.int32)),
+                    children,label=label)
+            else:result=request(channel_index,ch,a['selected'],mode,axes)
         elif cls in ANALYTIC_CLASSES:
             if mode=='density':
                 children=[request(channel_index,ch,name,m,axes) for m in ('value','integral')]
@@ -298,10 +336,14 @@ def pack_binned_channels(nodes,channels,scalars,*,compact_data=True):
         else:raise UnsupportedModelError(f'{label}: unsupported binned PDF {cls}')
         cache[key]=result;return result
     channel_records=[]
-    def correction(name):
+    def correction(name,table):
         cls,_,a=nodes[name]
-        if cls=='RooMultiPdf':return float(a['correction'])
-        if cls=='RooAddPdf':return sum(correction(n) for n in a['pdfs'])
+        if cls=='RooMultiPdf':
+            if a.get('profiled'):
+                table[category_lookup[a['category']],:len(a['corrections'])]+=a['corrections']
+                return 0.
+            return float(a['correction'])
+        if cls=='RooAddPdf':return sum(correction(n,table) for n in a['pdfs'])
         return 0.
     for i,ch in enumerate(channels):
         if ch.get('masked',False):
@@ -313,7 +355,10 @@ def pack_binned_channels(nodes,channels,scalars,*,compact_data=True):
         if any(n not in ch['coordinates'] or np.shape(ch['coordinates'][n])!=weights.shape or not np.all(np.isfinite(ch['coordinates'][n])) for n in ch['observables']):
             raise UnsupportedModelError(f'{ch["name"]}: invalid data coordinates')
         density=request(i,ch,ch['pdf'],'density',ch['observables']);fields=scalar_fields(a['coefs'])
-        fields=dict(densities=density[0],weights=weights,rates=fields['coefs'],rate_mask=fields['coef_mask'],correction=np.array(correction(ch['pdf'])))
+        correction_table=np.zeros((len(discrete),max_choices))
+        fixed_correction=correction(ch['pdf'],correction_table)
+        fields=dict(densities=density[0],weights=weights,rates=fields['coefs'],rate_mask=fields['coef_mask'],correction=np.array(fixed_correction))
+        if discrete:fields['correction_table']=correction_table
         channel_records.append(dict(name=ch['name'],masked=False,fields=fields,dynamic=density[1] or any(n in dynamic for n in a['coefs'])))
     if len({r['name'] for r in channel_records})!=len(channel_records):raise ValueError('Duplicate channel name')
     queries=pack_fast_queries(histograms,fast_requests);query_lookup={q['name']:q for q in queries.metadata['queries']}
@@ -335,6 +380,7 @@ def pack_binned_channels(nodes,channels,scalars,*,compact_data=True):
     records.clear()
     arrays=dict(initial_values=initial,fast_outputs=np.concatenate(fast_outputs).astype(np.int32) if fast_outputs else np.empty(0,dtype=np.int32),
         fast_inputs=np.concatenate(fast_inputs).astype(np.int32) if fast_inputs else np.empty(0,dtype=np.int32),**data_arrays)
+    if discrete:arrays['discrete_indices']=np.array([entry['initial'] for entry in discrete],dtype=np.int32)
     fast_outputs.clear();fast_inputs.clear();fast_bindings.clear()
     schedule=[]
     for gi,((depth,op,rows),group) in enumerate(sorted(groups.items())):
@@ -346,7 +392,9 @@ def pack_binned_channels(nodes,channels,scalars,*,compact_data=True):
     for i,r in enumerate(channel_records):
         if r['masked']:folded_channels.append(r['name'])
         elif not r['dynamic']:
-            value=nll_batch(initial,scalar_initial,{k:v[None,...] for k,v in r['fields'].items()})[0]
+            b={k:v[None,...] for k,v in r['fields'].items()}
+            if discrete:b['correction_indices']=arrays['discrete_indices'][None,:]
+            value=nll_batch(initial,scalar_initial,b)[0]
             if not np.isfinite(value):raise UnsupportedModelError(f'{r["name"]}: invalid fixed NLL')
             channel_initial[i]=value;folded_channels.append(r['name'])
         else:channel_groups[len(r['fields']['weights'])].append((i,r['fields']))
@@ -362,7 +410,7 @@ def pack_binned_channels(nodes,channels,scalars,*,compact_data=True):
         histograms=histograms.metadata,queries=queries.metadata,program=schedule,nll_program=nll_schedule,
         scalar_names=scalars.metadata['output_names'],names=[r['name'] for r in channel_records],folded_queries=folded,folded_channels=folded_channels,
         analytic_grid_queries=grid_queries,compact_shape_data=bool(compact_data),data_layouts=data_layouts,
-        active_pdf_classes=sorted({nodes[n][0] for n in active_pdfs}),
+        active_pdf_classes=sorted({nodes[n][0] for n in active_pdfs}),discrete_categories=discrete,
         scope='All supplied binned channels, with explicit normalization requests, fixed folding and batched density/NLL reductions.'),arrays)
     validate_binned_channels(result)
     return result
@@ -396,6 +444,14 @@ def validate_binned_channels(bundle):
     N=len(a['initial_values']);S=len(m['scalar_names']);Q=len(parts['queries'].arrays['initial_values'])
     def indices(values,limit,label):
         if values.dtype!=np.int32 or np.any(values<0) or np.any(values>=limit):raise ValueError(f'Invalid binned index {label}')
+    discrete=m.get('discrete_categories',[])
+    if discrete:
+        choices=a['discrete_indices']
+        counts=np.array([entry['count'] for entry in discrete])
+        if (choices.dtype!=np.int32 or choices.shape!=(len(discrete),)
+                or np.any(choices<0) or np.any(choices>=counts)
+                or len({entry['name'] for entry in discrete})!=len(discrete)):
+            raise ValueError('Invalid discrete category controls')
     indices(a['fast_outputs'],N,'fast_outputs');indices(a['fast_inputs'],Q,'fast_inputs')
     if a['fast_outputs'].shape!=a['fast_inputs'].shape:raise ValueError('Fast output shape differs')
     outputs=np.zeros(N,dtype=bool);channel_outputs=np.zeros(len(m['names']),dtype=bool)
@@ -405,7 +461,7 @@ def validate_binned_channels(bundle):
             b={k:a[n] for k,n in batch['buffers'].items()}
             op=batch['operation']
             allowed=ANALYTIC_OPERATIONS|GRID_ANALYTIC_OPERATIONS|GRID_OPERATIONS|{'divide','product','coef_sum','parametric_bins','step_bins','mixture_yields','mixture_fractions',
-                     'vertical_0','vertical_1','vertical_polynomial'}
+                     'vertical_0','vertical_1','vertical_polynomial','select_pdf'}
             if op not in ({'extended_binned_mixture'} if is_nll else allowed):raise ValueError('Unknown binned operation')
             indices(b['outputs'],len(m['names']) if is_nll else N,'outputs')
             if b['outputs'].ndim!=(1 if is_nll else 2):raise ValueError('Invalid binned output rank')
@@ -425,6 +481,13 @@ def validate_binned_channels(bundle):
                 if b['data_bins'].shape!=(H,R) or b['data_valid'].shape!=(H,R) or b['data_valid'].dtype!=bool:raise ValueError('Invalid data gather')
             if is_nll and (b['weights'].shape!=(H,R) or np.any(b['weights']<0) or b['correction'].shape!=(H,)):raise ValueError('Invalid extended NLL buffers')
             if op=='divide' and b['children'].shape[1]!=2:raise ValueError('Division needs two inputs')
+            if op=='select_pdf':
+                indices(b['category'],len(discrete),'category')
+                if b['category'].shape!=(H,) or any(discrete[i]['count']>b['children'].shape[1] for i in b['category']):
+                    raise ValueError('Invalid MultiPdf alternative selection')
+            if 'correction_table' in b:
+                if not discrete or b['correction_table'].shape!=(H,len(discrete),max(entry['count'] for entry in discrete)):
+                    raise ValueError('Invalid discrete correction table')
             if op.startswith('mixture_') and b['children'].shape[1]!=b['coefs'].shape[1]:raise ValueError('Mixture component/rate mismatch')
             if op.startswith('vertical_') and b['children'].shape[1]!=2*b['coefs'].shape[1]+1:raise ValueError('Vertical component/morph mismatch')
             if op in ANALYTIC_OPERATIONS|GRID_ANALYTIC_OPERATIONS:validate_analytic_fields(op,b,R)
@@ -442,10 +505,10 @@ def evaluate_binned_channels(bundle,scalar_values):
     fast=evaluate_fast_queries(parts['queries'],evaluate_fast_histograms(parts['histograms'],scalar_values))
     values=a['initial_values'].copy();values[a['fast_outputs']]=fast[a['fast_inputs']]
     for batch in bundle.metadata['program']:
-        b={k:a[n] for k,n in batch['buffers'].items()};values[b['outputs']]=operation(batch['operation'],values,scalar_values,b)
+        b=program_fields(batch,a);values[b['outputs']]=operation(batch['operation'],values,scalar_values,b)
     output=a['initial_nll'].copy()
     for batch in bundle.metadata['nll_program']:
-        b={k:a[n] for k,n in batch['buffers'].items()};output[b['outputs']]=nll_batch(values,scalar_values,b)
+        b=program_fields(batch,a);output[b['outputs']]=nll_batch(values,scalar_values,b)
     return output
 
 
@@ -475,14 +538,14 @@ def make_binned_function(bundle, *, gradient='ad', row_chunk_size=1024):
         values=arrays['initial_values'].at[arrays['fast_outputs']].set(selected,
             unique_indices=True,mode='promise_in_bounds',wrap_negative_indices=False)
         for batch in program:
-            b={k:arrays[n] for k,n in batch['buffers'].items()};values=values.at[b['outputs']].set(operation(batch['operation'],values,scalar_values,b,jnp),
+            b=program_fields(batch,arrays);values=values.at[b['outputs']].set(operation(batch['operation'],values,scalar_values,b,jnp),
                 unique_indices=True,mode='promise_in_bounds',wrap_negative_indices=False)
         return values
     def evaluate(scalar_values,arrays):
         values=densities(scalar_values,arrays)
         output=arrays['initial_nll']
         for batch in nll_program:
-            b={k:arrays[n] for k,n in batch['buffers'].items()};output=output.at[b['outputs']].set(nll_batch(values,scalar_values,b,jnp),unique_indices=True)
+            b=program_fields(batch,arrays);output=output.at[b['outputs']].set(nll_batch(values,scalar_values,b,jnp),unique_indices=True)
         return output
     if gradient!='ad':
         from .structural_gradient import make_structural_pullback

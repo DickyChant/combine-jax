@@ -10,7 +10,7 @@ def extract_category(root):
                 "states": tuple((str(t.first), int(t.second)) for t in root)}
 
 
-def extract_multipdf(root):
+def extract_multipdf(root, *, profile=False):
     index = int(root.getCurrentIndex())
     count = int(root.getNumPdfs())
     if not 0 <= index < count:
@@ -22,9 +22,23 @@ def extract_multipdf(root):
         raise UnsupportedModelError("Nonfinite MultiPdf correction")
     selected = str(root.getCurrentPdf().GetName())
     category = str(root.indexCategory().arg().GetName())
-    return (selected, category), {"selected": selected, "category": category, "index": index,
-                                  "alternatives": tuple(str(root.getPdf(i).GetName()) for i in range(count)),
-                                  "correction": correction}
+    attrs = {"selected": selected, "category": category, "index": index,
+             "alternatives": tuple(str(root.getPdf(i).GetName()) for i in range(count)),
+             "correction": correction}
+    category_node = root.indexCategory().arg()
+    if profile and not category_node.isConstant():
+        corrections = []
+        try:
+            for choice in range(count):
+                category_node.setIndex(choice)
+                corrections.append(float(root.getCorrection()))
+        finally:
+            category_node.setIndex(index)
+        if not all(math.isfinite(value) for value in corrections):
+            raise UnsupportedModelError("Nonfinite alternative MultiPdf correction")
+        attrs.update(profiled=True, corrections=tuple(corrections))
+        return (*attrs['alternatives'], category), attrs
+    return (selected, category), attrs
 
 
 def active_dependencies(nodes, roots):

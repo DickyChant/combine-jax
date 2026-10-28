@@ -10,7 +10,7 @@ def make_structural_pullback(evaluate, densities, histogram_queries, program, nl
                              *, row_chunk_size=1024, sequential_shapes=False):
     import jax
     import jax.numpy as jnp
-    from .binned_channels import operation, nll_batch
+    from .binned_channels import operation, nll_batch, program_fields
 
     if type(row_chunk_size) is not int or row_chunk_size < 1:
         raise ValueError('row_chunk_size must be a positive integer')
@@ -82,7 +82,7 @@ def make_structural_pullback(evaluate, densities, histogram_queries, program, nl
         values = densities(scalars, arrays)
         output = arrays['initial_nll']
         for batch in nll_program:
-            b = {k: arrays[n] for k, n in batch['buffers'].items()}
+            b = program_fields(batch, arrays)
             output = output.at[b['outputs']].set(nll_batch(values, scalars, b, jnp), unique_indices=True)
         return output, (scalars, arrays, values)
 
@@ -90,7 +90,7 @@ def make_structural_pullback(evaluate, densities, histogram_queries, program, nl
         scalars, arrays, values = residual
         scalar_bar, value_bar = jnp.zeros_like(scalars), jnp.zeros_like(values)
         for batch in nll_program:
-            b = {k: arrays[n] for k, n in batch['buffers'].items()}
+            b = program_fields(batch, arrays)
             local = local_fields(b, ('densities', 'rates'))
             def term(density, rates):
                 return nll_batch(density, rates, local, jnp)
@@ -101,7 +101,7 @@ def make_structural_pullback(evaluate, densities, histogram_queries, program, nl
             scalar_bar = accumulate(scalar_bar, b['rates'], rate_bar.reshape(b['rates'].shape))
 
         for batch in reversed(program):
-            b = {k: arrays[n] for k, n in batch['buffers'].items()}
+            b = program_fields(batch, arrays)
             op = batch['operation']
             if op == 'mixture_yields':
                 value_bar, score = mixture_pullback(values, scalars, b, value_bar)

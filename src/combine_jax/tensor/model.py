@@ -164,7 +164,7 @@ def evaluate_model_numpy(model,theta):
     return np.sum(constraints)+np.sum(channels)+template_sum+model.arrays['offset']
 
 
-def from_workspace(workspace,datacard=None,*,data='data_obs',analytic_barlow_beeston=True,compact_shape_data=True,fit_policy='workspace',template_convention='v10_density'):
+def from_workspace(workspace,datacard=None,*,data='data_obs',analytic_barlow_beeston=True,compact_shape_data=True,fit_policy='workspace',template_convention='v10_density',discrete_policy='fixed'):
     """Complete supported workspace+card import; other shapes fail by name.
 
     Existing extraction is reused once at the boundary, including exact native
@@ -173,12 +173,14 @@ def from_workspace(workspace,datacard=None,*,data='data_obs',analytic_barlow_bee
     before extraction and preserves the workspace's mass. The legacy default
     retains the supplied workspace ranges for existing oracle comparisons.
     """
+    if discrete_policy not in ('fixed','profile'):
+        raise ValueError('Unknown discrete import policy')
     if fit_policy!='workspace':
         from .fit_policy import POLICY,combine_v11_fit_context,attach_fit_policy
         if fit_policy!=POLICY:raise ValueError(f'Unsupported fit policy: {fit_policy}')
         with combine_v11_fit_context(workspace) as (state,ranges):
             model=from_workspace(workspace,datacard,data=data,analytic_barlow_beeston=analytic_barlow_beeston,
-                compact_shape_data=compact_shape_data,template_convention=template_convention)
+                compact_shape_data=compact_shape_data,template_convention=template_convention,discrete_policy=discrete_policy)
         return attach_fit_policy(model,state,ranges)
     from optparse import OptionParser
     from pathlib import Path
@@ -196,7 +198,7 @@ def from_workspace(workspace,datacard=None,*,data='data_obs',analytic_barlow_bee
         with datacard.open() as stream:card=parseCard(stream,options)
     from ..translators import default_registry
     exported=oracle_export(workspace,data=data,analytic_barlow_beeston=analytic_barlow_beeston,
-        registry=default_registry(template_convention=template_convention))
+        registry=default_registry(template_convention=template_convention,profile_multipdf=discrete_policy=='profile'))
     if card is not None and set(card.bins) != {c.name for c in exported.channels}:
         raise ValueError('Datacard/workspace channel sets differ')
     nodes={n:(v.class_name,v.inputs,dict(v.attrs)) for n,v in exported.nodes.items()}

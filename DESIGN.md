@@ -1105,3 +1105,26 @@ this can alter the final point within the documented stopping accuracy. It does
 not claim a native-identical optimization trajectory. Failed fits, absent upper
 brackets and nonfinite statistics are errors, never accepted observed limits.
 The expected-only implementation and previous validation reports stay intact.
+
+## RooMultiPdf profiling: staged implementation
+
+The default importer still freezes the selected alternative, preserving the old
+backend as an oracle. Opt-in tensor import with `discrete_policy="profile"` now
+retains the union of active alternatives' parameters, normalized density programs,
+and stored correction factors. Category indices are integer runtime buffers;
+changing them does not retrace the likelihood. A fixed category keeps the old
+selection. Constant templates are still folded, but their categorical selection
+stays dynamic. Penalties enter the raw NLL once per channel in the same flattened
+RooAddPdf locations as CachingAddNLL; they are not recomputed from the number of
+parameters left floating after freezing. The public limits CLI is still guarded
+until discrete minimization and native validation are complete.
+
+Native v10's default CascadeMinimizer performs an initial continuous fit, then
+alternates short scans over orthogonal index combinations with full continuous
+fits, stopping at a change below 0.001 NLL or after 15 iterations. During each
+short scan it freezes POIs and parameters outside the RooMultiPdf parameter
+union. Dhi additionally freezes inactive alternative parameters, hides constants,
+masks constraints, and uses `MINIMIZER_multiMin_maskChannels=2`. Dhi's default
+Migrad strategy is 0 with tolerance 0.1 and fallbacks at 0.2 and 0.4. These
+conventions require their own native comparisons; a frozen-choice limit is not
+a discrete-profile result.

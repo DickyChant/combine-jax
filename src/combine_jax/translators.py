@@ -156,7 +156,7 @@ def real_sum_integral(node, context, axes):
                for f, c in zip(node.attrs["functions"], node.attrs["coefs"], strict=True))
 
 
-def default_registry(*, template_convention='native'):
+def default_registry(*, template_convention='native', profile_multipdf=False):
     from functools import partial
     from .template_conventions import check_convention
     check_convention(template_convention)
@@ -186,7 +186,7 @@ def default_registry(*, template_convention='native'):
     for cls in ("RooRealVar", "RooConstVar"):
         registry.register(cls, extract_leaf, leaf_value)
     registry.register("RooCategory", extract_category, lambda n,c: jnp.asarray(n.attrs["index"]))
-    registry.register("RooMultiPdf", extract_multipdf,
+    registry.register("RooMultiPdf", lambda r: extract_multipdf(r, profile=profile_multipdf),
                       lambda n,c: c.value(n.attrs["selected"]),
                       density=lambda n,c,a: c.density(n.attrs["selected"],a))
     registry.register("AsymPow", lambda r: (ordered((r.kappaLow(), r.kappaHigh(), r.theta())), {}), asympow)
