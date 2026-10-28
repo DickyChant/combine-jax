@@ -17,7 +17,7 @@ class LimitProfiler:
                  compiler_memory_limit_gib=8., max_iterations=10000,
                  global_up=None, global_start_fraction=.01,
                  compile_kinds=('global', 'conditional', 'unprofiled'),
-                 release_compile_cache=False, compile_progress=None):
+                 release_compile_cache=False, compile_progress=None, fit_progress=None):
         import jax
         import jax.numpy as jnp
         import numpy as np
@@ -37,6 +37,7 @@ class LimitProfiler:
         # host tracing/compiler memory without changing the numerical program.
         self.release_compile_cache = release_compile_cache
         self.compile_progress = compile_progress
+        self.fit_progress = fit_progress
         start = time.perf_counter()
         info = model_parameter_info(model)
         names = info.metadata['names']
@@ -140,6 +141,8 @@ class LimitProfiler:
         summary = {k: v.item() for k, v in jax.device_get({k: result[k][0] for k in fields}).items()}
         summary.update(kind=kind, mu=mu)
         self.records.append(summary)
+        if self.fit_progress is not None:
+            self.fit_progress(dict(summary))
         if summary['status'] != 0:
             raise RuntimeError(f'{kind} fit failed at {self.poi}={mu}: {summary}')
         self.warm = result['values'][0]

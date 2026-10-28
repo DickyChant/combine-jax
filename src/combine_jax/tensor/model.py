@@ -164,7 +164,7 @@ def evaluate_model_numpy(model,theta):
     return np.sum(constraints)+np.sum(channels)+template_sum+model.arrays['offset']
 
 
-def from_workspace(workspace,datacard,*,data='data_obs',analytic_barlow_beeston=True,compact_shape_data=True,fit_policy='workspace',template_convention='v10_density'):
+def from_workspace(workspace,datacard=None,*,data='data_obs',analytic_barlow_beeston=True,compact_shape_data=True,fit_policy='workspace',template_convention='v10_density'):
     """Complete supported workspace+card import; other shapes fail by name.
 
     Existing extraction is reused once at the boundary, including exact native
@@ -190,12 +190,14 @@ def from_workspace(workspace,datacard,*,data='data_obs',analytic_barlow_beeston=
     from ..root_io import load_root
     parser=OptionParser();addDatacardParserOptions(parser)
     options,_=parser.parse_args([])
-    datacard=Path(datacard)
-    with datacard.open() as stream:card=parseCard(stream,options)
+    datacard=Path(datacard) if datacard is not None else None
+    card=None
+    if datacard is not None:
+        with datacard.open() as stream:card=parseCard(stream,options)
     from ..translators import default_registry
     exported=oracle_export(workspace,data=data,analytic_barlow_beeston=analytic_barlow_beeston,
         registry=default_registry(template_convention=template_convention))
-    if set(card.bins) != {c.name for c in exported.channels}:
+    if card is not None and set(card.bins) != {c.name for c in exported.channels}:
         raise ValueError('Datacard/workspace channel sets differ')
     nodes={n:(v.class_name,v.inputs,dict(v.attrs)) for n,v in exported.nodes.items()}
     observables={n for c in exported.channels for n in c.observables}
@@ -221,9 +223,11 @@ def from_workspace(workspace,datacard,*,data='data_obs',analytic_barlow_beeston=
     counting_rows=[r for r in rows if uniform(r)]
     binned_rows=[r for r in rows if r['name'] not in template_names and not uniform(r)]
     channels=pack_counting_channels(nodes,counting_rows,scalars)
-    provenance=dict(card=str(datacard),card_sha256=hashlib.sha256(datacard.read_bytes()).hexdigest(),
+    provenance=dict(card=str(datacard) if datacard is not None else None,
+            card_sha256=hashlib.sha256(datacard.read_bytes()).hexdigest() if datacard is not None else None,
             combine_version=version('higgs-combine-tool'),root_version=str(root.gROOT.GetVersion()),
-            workspace_name=str(workspace.GetName()),all_card_channels_imported=True,
+            workspace_name=str(workspace.GetName()),all_card_channels_imported=True if card is not None else None,
+            channel_source='workspace_modelconfig' if card is None else 'workspace_and_datacard',
             template_convention=template_convention,
             discrete_choices=exported.discrete_choices,channel_masks=exported.mask_configuration)
     from ..dataset_identity import binding_identity

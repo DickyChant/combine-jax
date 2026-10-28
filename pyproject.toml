@@ -11,12 +11,16 @@ dependencies = ["jax>=0.4.30", "numpy", "scipy", "iminuit"]
 
 [project.optional-dependencies]
 test = ["pytest"]
+output = ["uproot>=5,<6"]
 
 [project.scripts]
 combine-jax = "combine_jax.cli:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.setuptools.package-data]
+"combine_jax.runtime" = ["*.sh"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

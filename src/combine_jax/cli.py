@@ -22,6 +22,8 @@ def main():
     commands = parser.add_subparsers(dest="command", required=True)
     from .methods.cli import add_limit_command, run_limit
     add_limit_command(commands)
+    from .runtime.options import add_limits_command
+    add_limits_command(commands)
     inspect = commands.add_parser("inspect", help="Inspect a workspace without fitting or modifying it")
     inspect.add_argument("path", type=Path)
     inspect.add_argument("--workspace", default="w")
@@ -30,6 +32,9 @@ def main():
     args = parser.parse_args(argv)
     if args.command == 'limit':
         return run_limit(args)
+    if args.command == 'limits':
+        from .runtime.controller import run_limits
+        return run_limits(args)
     if args.command == "inspect":
         start = time.perf_counter()
         root = load_root()

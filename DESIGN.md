@@ -10,6 +10,38 @@ does not claim that it is implemented or equivalent.
 
 ## Statistical method layer
 
+### End-to-end blinded runtime and DHI integration
+
+`combine-jax limits` is the deployable, pre-fit expected-only entrypoint. The
+original `limit`/`-M AsymptoticLimits` interface remains available for prepared
+models and research workflows. The deployable entrypoint accepts one POI,
+mass, assignments, ranges, freeze patterns/groups and explicit discrete policy.
+It rejects observed operation and expected mode without `--noFitAsimov`.
+Unknown parameters and unsupported configurations fail rather than approximate.
+
+Three isolated processes own the three environments: native v10.3.3/ROOT 6.30
+generates background-only nominal Asimov rows; the public source-built v11/pip
+ROOT 6.40 importer exports neutral arrays with `v10_density`; CUDA LCG JAX 0.10.1
+loads only those arrays. Version checks and dataset/source hashes bind the stages.
+No ROOT interpreter is loaded in the fit process. The output has five native
+quantile labels in a genuine `limit` TTree, no observed row, and a required JSON
+receipt. A returned midpoint without an evaluated bracket or an accepted NLL
+crossing is explicitly unresolved and stored as NaN. A failed fit aborts output.
+
+The runtime installer builds the importer from pinned public source, packages
+relocatable dependencies and code, and records an archive checksum. DHI's opt-in
+`limit_backend=jax` uses a separate output suffix, adds a runtime-bundle dependency
+and H100/A100 request through its HTCondor hooks, and bootstraps worker scratch.
+Native task commands and paths retain their defaults; MergeUpperLimits and plot
+loaders consume the standard tree unchanged. The native CMSSW path is configured,
+not embedded in the wrapper. Every GPU run keeps float64, structural-sequential
+gradients, the 8 GiB static guard and process/GPU memory measurements.
+
+The law integration is validated independently of the older artifact-driven
+benchmarks: it starts from CreateWorkspace, generates and imports its own Asimov,
+and compares the merged expected NPZ with native v10. No reference value is a
+runtime input. Statistical bracketing and convergence thresholds are unchanged.
+
 Method dispatch accepts workspace/datacard inputs and an explicit POI, configuration,
 dataset and method options. It separates ROOT import and dataset preparation from
 the reusable device likelihood, fit and conditional-profile executables. Each result
