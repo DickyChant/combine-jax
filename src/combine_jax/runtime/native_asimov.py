@@ -59,9 +59,10 @@ def discrete_snapshot(workspace):
 
 def generate(request_path, directory):
     config = json.loads(Path(request_path).read_text())
+    multidim = config.get('method') == 'MultiDimFit'
     if config['run'] not in ('blind','expected') or not config['no_fit_asimov']:
         raise ValueError('Native generation is blinded, pre-fit background-only')
-    if config['signal_strength'] != 0.:
+    if not multidim and config['signal_strength'] != 0.:
         raise ValueError('Background-only Asimov is required')
     directory = Path(directory)
     directory.mkdir(parents=True, exist_ok=False)
@@ -91,11 +92,23 @@ def generate(request_path, directory):
         raise OSError(config['workspace'])
     ws = handle.Get('w')
     mc = ws.obj('ModelConfig')
-    poi = ws.var(config['poi'])
+    requested_pois = config.get('pois', [config['poi']])
+    poi = ws.var(requested_pois[0])
     if not poi:
         raise ValueError('Unknown POI '+config['poi'])
     current_pois = [p.GetName() for p in mc.GetParametersOfInterest()]
-    if current_pois != [config['poi']]:
+    if multidim:
+        new_pois = R.RooArgSet()
+        for poi_name in requested_pois:
+            variable = ws.var(poi_name)
+            if not variable:
+                raise ValueError('Unknown POI '+poi_name)
+            if mc.GetNuisanceParameters() and mc.GetNuisanceParameters().find(poi_name):
+                raise NotImplementedError('Promoting a constrained nuisance to a POI awaits ignoreConstraint validation: '+poi_name)
+            new_pois.add(variable)
+            variable.setConstant(False)
+        mc.SetParametersOfInterest(new_pois)
+    elif current_pois != [config['poi']]:
         raise ValueError('Requested POI must equal the single workspace POI: '+repr(current_pois))
     for name, limits in config['ranges'].items():
         variable = ws.var(name)
@@ -121,16 +134,17 @@ def generate(request_path, directory):
         if not members:
             raise ValueError('Unknown nuisance group '+group)
         frozen.update(v.GetName() for v in members)
-    if config['poi'] in frozen:
-        raise ValueError('Cannot freeze the limit POI')
+    if set(requested_pois) & frozen:
+        raise ValueError('Cannot freeze a requested POI')
     for name in frozen:
         variables[name].setConstant(True)
     if ws.var('MH'):
         ws.var('MH').setVal(config['mass'])
         ws.var('MH').setConstant(True)
     poi.setConstant(False)
-    poi.setMin(0.)
-    if config['r_max'] is not None:
+    if not multidim:
+        poi.setMin(0.)
+    if not multidim and config['r_max'] is not None:
         poi.setMax(config['r_max'])
     flags = {'TMCSO_AdaptivePseudoAsimov': 0, 'TMCSO_PseudoAsimov': 0}
     for name, value in flags.items():
@@ -140,7 +154,10 @@ def generate(request_path, directory):
                (mc.GetNuisanceParameters(), mc.GetGlobalObservables()) for v in (collection or ())
                if v.InheritsFrom('RooAbsReal')}
     start = time.perf_counter()
-    data = R.asimovutils.asimovDatasetNominal(mc, 0., -1)
+    generation_values = {n: float(ws.var(n).getVal()) for n in requested_pois}
+    signal_strength = generation_values[requested_pois[0]] if multidim else 0.
+    generation_values[requested_pois[0]] = signal_strength
+    data = R.asimovutils.asimovDatasetNominal(mc, signal_strength, -1)
     if not data or data.sumEntries() <= 0:
         raise RuntimeError('Empty native Asimov dataset')
     for name, value in nominal.items():
@@ -148,13 +165,35 @@ def generate(request_path, directory):
             raise RuntimeError('Generation changed nominal '+name)
     if discrete_snapshot(ws)!=discrete:
         raise RuntimeError('Generation changed nominal discrete configuration')
-    name = 'combine_jax_asimov_bonly'
+    name = 'combine_jax_asimov_nominal' if multidim else 'combine_jax_asimov_bonly'
     if ws.data(name):
         raise ValueError('Reserved Asimov name already exists')
     data.convertToTreeStore()
     if getattr(ws, 'import')(data, R.RooFit.Rename(name)):
         raise RuntimeError('Asimov workspace import failed')
-    poi.setVal(0.); poi.setConstant(False)
+    poi.setVal(signal_strength); poi.setConstant(False)
+    nll0 = None
+    removed_bounds = {}
+    if multidim:
+        # FitterAlgoBase applies OPTIMIZE_BOUNDS before constructing its NLL.
+        for variable in mc.GetNuisanceParameters() or ():
+            if variable.InheritsFrom('RooRealVar') and variable.getAttribute('optimizeBounds'):
+                removed_bounds[variable.GetName()] = (variable.getMin(), variable.getMax())
+                variable.removeMin(); variable.removeMax()
+        R.gInterpreter.Declare('''
+            #include "HiggsAnalysis/CombinedLimit/interface/Combine.h"
+            double combine_jax_initial_nll(RooStats::ModelConfig &mc, RooAbsData &data) {
+                auto nll = combineCreateNLL(*mc.GetPdf(), data, mc.GetNuisanceParameters(), true);
+                return nll->getVal();
+            }
+        ''')
+        nll0 = float(R.combine_jax_initial_nll(mc, data))
+        if not math.isfinite(nll0):
+            raise RuntimeError('Nonfinite native initial offset NLL')
+        for variable_name, bounds in removed_bounds.items():
+            variable = ws.var(variable_name)
+            if math.isfinite(bounds[0]): variable.setMin(bounds[0])
+            if math.isfinite(bounds[1]): variable.setMax(bounds[1])
     target = directory/'workspace.root'
     if ws.writeToFile(str(target)):
         raise RuntimeError('Asimov workspace write failed')
@@ -162,11 +201,15 @@ def generate(request_path, directory):
     saved = check.Get('w').data(name)
     if saved.numEntries() != data.numEntries() or saved.sumEntries() != data.sumEntries():
         raise RuntimeError('Saved Asimov differs on reopen')
-    report = dict(status='generated_native_v10_background_asimov', generation_kind='combine_prefit_background_asimov',
+    report = dict(status='generated_native_v10_nominal_asimov' if multidim else 'generated_native_v10_background_asimov',
+        generation_kind='combine_prefit_nominal_asimov' if multidim else 'combine_prefit_background_asimov',
         config=config, workspace=str(target), workspace_sha256=digest(target),
         source_workspace_sha256=digest(config['workspace']),
         dataset=dict(name=name, entries=data.numEntries(), sum_weights=data.sumEntries()),
-        poi=config['poi'], signal_strength=0., mode='prefit', frozen_parameters=sorted(frozen),
+        poi=config['poi'], pois=requested_pois, generation_poi_values=generation_values,
+        signal_strength=signal_strength, mode='prefit', frozen_parameters=sorted(frozen),
+        native_initial_offset_nll=nll0, optimized_nuisance_bounds=sorted(removed_bounds),
+        minos_delta_nll=.5 if mc.GetPdf().InheritsFrom('RooSimultaneousOpt') else None,
         root_version=R.gROOT.GetVersion(), combine_version=version,
         version_source='installer declaration, bound to native library SHA256', library_sha256=digest(library),
         cmssw=str(base), runtime_flags=flags,discrete=discrete,

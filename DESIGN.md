@@ -1184,3 +1184,41 @@ decompressed numeric array as immutable, avoiding a second complete host copy.
 The public bundle constructor still copies caller-owned arrays. Both paths
 enforce the same numeric schema, C-contiguous layout and structure checksum;
 no template precision or model contents change.
+# MultiDimFit methods (experimental; native law validation pending)
+
+The public `multidim` command (`-M MultiDimFit`) accepts explicit nominal Asimov
+generation values and `-t -1`. Native v10 generates that dataset, including its
+global observables, and records the initial offset NLL without fitting data.
+The isolated importer applies FitterAlgoBase's `OPTIMIZE_BOUNDS` policy before
+lowering the model. MultiDimFit does not inherit the limit method's nonnegative
+POI range or its 1%-of-rMax starting point. Snapshot and observed execution are
+not enabled in this command. Constraint promotion to a new POI is explicitly
+unsupported until its native masking convention is validated.
+
+One structural-sequential objective serves the global fit and conditional
+executables. Different fixed parameters reuse an executable with runtime index
+maps when their number is unchanged. Every profile restores the global solution
+and discrete choices. The fit loop stays on device. The existing 8 GiB static
+guard and 11264 MiB process-group RSS guard also apply here. Grid coordinates
+use alignEdges=1 and the last axis varies fastest. Standard output contains the
+best-fit row followed by grid rows; `deltaNLL` and parameter branches are float32,
+`nll0` and `nll` are double. The raw likelihood and all fits remain float64.
+
+Impacts use profile intervals followed by independent conditional POI fits at
+both endpoints. These are not Hessian error variations. Native v10
+`CascadeMinimizer::minos` rebuilds RooMinimizer for CachingSimNLL and resets its
+error definition to **0.5**; native `--robustFit 1` instead uses
+`0.5*chi2_isf(0.32,1) = 0.494473240739`. The former matters even without bin-stat
+parameters. The JAX crossing controller currently uses Brent bracketing, not a
+port of Minos or native robustFit's stepping path. It records the target,
+crossing residual and explicit bound truncation. Native singles/impact rows
+leave `deltaNLL=0`; their actual conditional NLLs remain in the JSON receipt.
+
+The default experimental MultiDimFit CLI validates EDM with exact final AD
+curvature (one-column batches); no covariance is reported by the profile driver.
+The raw EDM thresholds remain 0.002*0.1*Up. A small counting Asimov example found
+that gradient-only estimated EDM could accept a poorly conditioned conditional
+fit too early, so that policy is explicit rather than silently certified for
+impacts. Exact curvature is unsupported for discrete envelopes with inactive
+shape directions. Scalable HVP-based EDM validation for large or discrete models
+remains separate work; passing a memory guard is required before execution.

@@ -16,14 +16,17 @@ def main():
     argv = sys.argv[1:]
     if '-M' in argv:
         index = argv.index('-M')
-        if index+1 >= len(argv) or argv[index+1] != 'AsymptoticLimits':
-            parser.error('Implemented method dispatch: -M AsymptoticLimits; other methods await native validation')
-        argv = ['limit', *argv[:index], *argv[index+2:]]
+        methods = {'AsymptoticLimits': 'limit', 'MultiDimFit': 'multidim'}
+        if index+1 >= len(argv) or argv[index+1] not in methods:
+            parser.error('Implemented method dispatch: AsymptoticLimits and experimental Asimov MultiDimFit')
+        argv = [methods[argv[index+1]], *argv[:index], *argv[index+2:]]
     commands = parser.add_subparsers(dest="command", required=True)
     from .methods.cli import add_limit_command, run_limit
     add_limit_command(commands)
     from .runtime.options import add_limits_command
     add_limits_command(commands)
+    from .runtime.multidim_options import add_multidim_command
+    add_multidim_command(commands)
     inspect = commands.add_parser("inspect", help="Inspect a workspace without fitting or modifying it")
     inspect.add_argument("path", type=Path)
     inspect.add_argument("--workspace", default="w")
@@ -35,6 +38,9 @@ def main():
     if args.command == 'limits':
         from .runtime.controller import run_limits
         return run_limits(args)
+    if args.command == 'multidim':
+        from .runtime.controller import run_limits
+        return run_limits(args, method='MultiDimFit')
     if args.command == "inspect":
         start = time.perf_counter()
         root = load_root()

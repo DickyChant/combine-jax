@@ -38,8 +38,12 @@ def main(request_path, generation_path, directory):
     from ..methods.workspace import digest
     config = json.loads(Path(request_path).read_text())
     generation = json.loads(Path(generation_path).read_text())
-    assert generation['status'] == 'generated_native_v10_background_asimov'
-    assert generation['config'] == config and generation['signal_strength'] == 0.
+    multidim = config.get('method') == 'MultiDimFit'
+    assert generation['status'] == ('generated_native_v10_nominal_asimov' if multidim
+                                    else 'generated_native_v10_background_asimov')
+    assert generation['config'] == config
+    if not multidim:
+        assert generation['signal_strength'] == 0.
     assert digest(generation['workspace']) == generation['workspace_sha256']
     root = load_caching_nll()
     if root.gROOT.GetVersion() != '6.40.00' or version('higgs-combine-tool') != '11.0.0':
@@ -53,6 +57,7 @@ def main(request_path, generation_path, directory):
         assert data.numEntries() == generation['dataset']['entries']
         assert data.sumEntries() == generation['dataset']['sum_weights']
         model = from_workspace(workspace, config['datacard'], data=name, template_convention='v10_density',
+            fit_policy='combine_v11_default' if multidim else 'workspace',
             discrete_policy='profile' if config['discrete_policy']=='profile' else 'fixed')
     assert model.metadata['provenance']['dataset']['identity'] == identity
     choices = model.metadata['provenance']['discrete_choices']
@@ -60,17 +65,20 @@ def main(request_path, generation_path, directory):
         raise NotImplementedError('RooMultiPdf requires explicit --discrete-policy profile or fixed')
     if choices and config['discrete_policy']=='profile':
         verify_discrete_penalties(choices,generation.get('discrete'))
-    model.metadata['asymptotic_asimov'] = dict(poi=config['poi'], signal_strength=0., mode='prefit',
+    model.metadata['multidim_asimov' if multidim else 'asymptotic_asimov'] = dict(
+        poi=config['poi'], signal_strength=generation['signal_strength'], mode='prefit',
         dataset=name, dataset_identity=identity, source_workspace_sha256=generation['source_workspace_sha256'],
         native_asimov_workspace_sha256=generation['workspace_sha256'],
         globals=generation['globals'], root_version=generation['root_version'], combine_version='10.3.3',
         template_convention='v10_density', native_generation=True,
-        fit_bounds_policy='workspace_ranges_asymptotic', conditional_fit=None,
+        fit_bounds_policy='optimize_bounds_multidimfit' if multidim else 'workspace_ranges_asymptotic',
+        conditional_fit=None,
         discrete_policy=config['discrete_policy'] if choices else 'profile',
         fixed_discrete_choices=choices if config['discrete_policy']=='fixed' else {},
         native_discrete=generation.get('discrete',{}))
     model.save(directory/'model')
-    report = dict(status='imported_native_v10_background_asimov', model=str(directory/'model'),
+    report = dict(status='imported_native_v10_nominal_asimov' if multidim else 'imported_native_v10_background_asimov',
+        model=str(directory/'model'),
         model_sha256={n: digest(directory/'model'/n) for n in ('model.json','arrays.npz')},
         dataset=dict(name=name, identity=identity), generation=generation,
         import_root_version=root.gROOT.GetVersion(), import_combine_version=version('higgs-combine-tool'),
