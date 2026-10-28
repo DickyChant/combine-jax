@@ -120,6 +120,16 @@ def run_limits(args):
         print('Expected quantiles:',[(r['quantile'],r['limit'],r['status']) for r in fit['rows']],flush=True)
     except BaseException as exc:
         report.update(status='failed',error=repr(exc),total_wall_seconds=time.perf_counter()-started)
+        # A batch worker's temporary directory disappears after failure. Keep
+        # the last fit checkpoint in the transferred receipt, including partial
+        # profile convergence and memory measurements. Never replace the primary
+        # exception if termination interrupted an evidence write.
+        checkpoint = workdir/'fit.json'
+        if checkpoint.exists():
+            try:
+                report['fit'] = json.loads(checkpoint.read_text())
+            except (OSError, ValueError) as evidence_error:
+                report['fit_checkpoint_error'] = repr(evidence_error)
         raise
     finally:
         save_json(sidecar,report)

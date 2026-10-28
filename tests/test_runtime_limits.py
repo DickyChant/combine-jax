@@ -78,3 +78,35 @@ def test_gpu_check_rejects_condor_mig_allocation_before_cuda(monkeypatch):
     monkeypatch.setenv('CUDA_VISIBLE_DEVICES','MIG-b05acb82-d929-50be-bab0-285bc5b18f63')
     with pytest.raises(RuntimeError,match='MIG allocations are unsupported'):
         verify('gpu')
+
+
+@pytest.mark.parametrize('truncated', [False, True])
+def test_failed_batch_fit_transfers_checkpoint_without_masking_failure(tmp_path, monkeypatch, truncated):
+    from combine_jax.runtime import controller
+    prefix = tmp_path/'runtime'
+    prefix.mkdir()
+    (prefix/'runtime.json').write_text(json.dumps(dict(files={}, native_version='10.3.3',
+        native_library_sha256='test', native_cmssw='/unused', lcg_view='/unused')))
+    output = tmp_path/'limit.root'
+    workdir = tmp_path/'work'
+    checkpoint = dict(status='failed', profiles=[dict(status=0, value=12.5)],
+        resources=dict(peak_rss_mib=1234.))
+
+    def stage(command, environment, log):
+        if log.name == 'fit.log':
+            (log.parent/'fit.json').write_text('{' if truncated else json.dumps(checkpoint))
+            raise RuntimeError('original fit failure')
+        return dict(wall_seconds=0.)
+
+    monkeypatch.setattr(controller, 'stage', stage)
+    args = parse('--runtime', str(prefix), '--workdir', str(workdir),
+                 '--output', str(output), '--backend', 'cpu')
+    with pytest.raises(RuntimeError, match='original fit failure'):
+        controller.run_limits(args)
+    receipt = json.loads(output.with_suffix('.json').read_text())
+    assert receipt['status'] == 'failed' and 'original fit failure' in receipt['error']
+    assert not output.exists()
+    if truncated:
+        assert 'fit_checkpoint_error' in receipt and 'fit' not in receipt
+    else:
+        assert receipt['fit'] == checkpoint
