@@ -98,6 +98,60 @@ The existing inference setup supplies and transports the native CMSSW release;
 rsync, importer creation, spooled-output transfer or completed-job removal is
 needed. Shared software and credentials follow the existing inference workflow.
 
+## Experimental Asimov scans and impacts
+
+`combine-jax multidim` (also `-M MultiDimFit`) provides grid scans, profile
+intervals and nuisance impacts. Counting-card comparisons against native v10
+pass; the larger model validations through law are still pending. These methods
+require `--toys -1` and an explicit generation value for every POI. They do not
+read observed data or use a post-fit snapshot.
+
+```bash
+combine-jax multidim --workspace workspace.root --poi r --toys -1 \
+  --setParameters r=0 --setParameterRanges r=-1,3 \
+  --algo grid --gridPoints 5 --backend gpu
+
+combine-jax multidim --workspace workspace.root --poi r --toys -1 \
+  --setParameters r=0 --setParameterRanges r=-1,3 \
+  --algo batch-impacts --parameters r,lumi,background_norm --backend gpu \
+  --output impacts.root
+```
+
+Use the parameter names from the actual workspace. Two-dimensional grids accept
+`--poi first,second`, one range and grid count per axis, and `--firstPoint` /
+`--lastPoint` for partitioning. Each conditional fit starts from the saved global
+minimum. Batched impacts reuse the import, global fit and conditional executable;
+their output is a directory of standard `limit` TTrees plus a JSON parameter-to-file
+map. The default EDM validation uses the exact final AD Hessian. Flat global POI
+directions require an explicit `--global-edm-validation estimated` choice and
+independent validation; that choice does not certify global covariance.
+
+The inference branch also supplies `--scan-backend jax` and
+`--impacts-backend jax`, with separate targets and unchanged merge/plot loaders:
+
+```bash
+law run MergeLikelihoodScan \
+  --datacards /path/to/datacard.txt --version asimov_scan \
+  --hh-model hhvv_model.model_default --pois r_hhvv \
+  --parameter-values MX=4000:r_hhvv=0 --frozen-parameters MX \
+  --scan-parameters r_hhvv,-1,3,5 --scan-backend jax \
+  --LikelihoodScan-workflow htcondor --workers 1
+
+law run MergePullsAndImpacts \
+  --datacards /path/to/datacard.txt --version asimov_impacts \
+  --hh-model hhvv_model.model_default --pois r_hhvv \
+  --parameter-values MX=4000:r_hhvv=0 --frozen-parameters MX \
+  --parameter-ranges r_hhvv=-10,10 --impacts-backend jax \
+  --PullsAndImpacts-workflow local --JAXImpactBatch-workflow htcondor --workers 1
+```
+
+`--jax-batch-size` controls the number of nuisance intervals sharing one GPU job
+(default 32). `--only-parameters` selects a smaller validation set. The local
+PullsAndImpacts tasks copy the finished batch files; the fits run on the requested
+HTCondor GPU. `PlotPullsAndImpacts` consumes the same merged result. Full covariance
+matrices, snapshot fits and discrete-component nuisance impacts are not supplied
+by this implementation.
+
 ## Development
 
 ```bash
