@@ -54,8 +54,13 @@ nuisances/global observables and the requested mass. The importer consumes those
 same rows using the corrected `v10_density` template convention. JAX uses the
 `structural_sequential` gradient and device-resident BFGS/EDM fit, retaining
 workspace nuisance bounds and an 8 GiB XLA static allocation guard.
-RooMultiPdf is rejected unless `--discrete-policy fixed` is explicit; this means
-limits conditional on nominal choices, not native discrete-envelope agreement.
+RooMultiPdf requires an explicit policy. `--discrete-policy profile` runs the
+native short-combination ordering and stored correction penalties with on-device
+continuous fits. Independent, unconstrained alternative-shape parameters are
+supported; shared/constrained shapes and nested MultiPdfs raise errors pending
+validation. `--discrete-policy fixed` instead reports limits conditional on the
+nominal choices and is not a discrete envelope. See DESIGN.md for the exact
+stopping conventions and the distinction between BFGS and native Minuit2.
 
 The default output is `higgsCombineTest.AsymptoticLimits.mH125.0.root`, containing
 a standard TTree named `limit` with five expected quantiles and no observed row.
@@ -63,8 +68,9 @@ a standard TTree named `limit` with five expected quantiles and no observed row.
 records input/source hashes, dataset identity, fit convergence, evaluation counts,
 setup/compile/execution timings, versions and sampled memory. An unresolved
 crossing is NaN in the tree and has an explicit sidecar status; it is never a
-silent midpoint. Any failed fit fails the command. Stage logs are retained in the
-printed work directory. Existing output files are not overwritten.
+silent midpoint. Any failed fit fails the command; its last fit checkpoint is
+retained in the sidecar when available. Stage logs are retained in the printed
+work directory. Existing output files are not overwritten.
 
 ## DHI / law integration
 
@@ -80,10 +86,13 @@ law run MergeUpperLimits \
   --UpperLimits-workflow htcondor --workers 1
 ```
 
-Law bundles and checksums the runtime, requests one H100/A100 and 12 GiB host
-memory, fetches the bundle into worker scratch, monitors the job and writes the
+Law bundles and checksums the runtime, requests one H100/A100 and eight CPU slots
+(CERN assigns 24 GB host memory), fetches the bundle into worker scratch, monitors the job and writes the
 ROOT output plus JSON receipt. The unchanged MergeUpperLimits loader produces
 its usual NPZ. JAX filenames contain `__jax`, preserving native results.
+For discrete profiling, add `--jax-discrete-policy profile`; filenames also
+contain `profilediscretes`. JAX worker logs use a separate `jax_<policy>` directory
+so paired native/JAX validations retain both logs.
 The existing inference setup supplies and transports the native CMSSW release;
 `COMBINE_JAX_NATIVE_CMSSW` is set to that worker's `CMSSW_BASE`. No manual repo
 rsync, importer creation, spooled-output transfer or completed-job removal is
