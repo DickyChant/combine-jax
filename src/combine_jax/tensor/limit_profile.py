@@ -158,6 +158,12 @@ class LimitProfiler:
         if self.discrete:
             summary.update({k:jax.device_get(result[k][0]).tolist() for k in
                 ('discrete_indices','candidate_status','candidate_iterations','candidate_edm','candidate_indices')})
+        if kind == 'global':
+            # Export once after the global loop finishes. A failed or unresolved
+            # later crossing can then be diagnosed from this exact starting
+            # point, rather than reconstructing it with another fit.
+            summary['parameter_names'] = list(self.names)
+            summary['parameter_values'] = jax.device_get(result['values'][0]).tolist()
         summary.update(kind=kind, mu=mu)
         self.records.append(summary)
         if self.fit_progress is not None:

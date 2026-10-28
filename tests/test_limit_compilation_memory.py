@@ -13,6 +13,11 @@ def test_selected_compilations_and_cache_release_preserve_fits(counting_path):
     baseline = reference.global_minimum()
     global_point = reference.point()
     profiled = [reference(mu) for mu in (0., .4, 1.)]
+    # The global checkpoint must not become the last conditional warm start.
+    saved = reference.records[0]
+    assert saved['parameter_names'] == reference.names
+    np.testing.assert_array_equal(saved['parameter_values'], global_point)
+    assert all('parameter_values' not in row for row in reference.records[1:])
     events = []
     bounded = LimitProfiler(model, 'r', global_up=.5, global_start_fraction=.1,
         compile_kinds=('global', 'conditional'), release_compile_cache=True,

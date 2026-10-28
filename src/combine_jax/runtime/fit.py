@@ -66,7 +66,8 @@ def main(request_path, preparation_path, output):
         monitor.stage = 'profiles'
         report['profiles'].append(record)
         report['jax_allocator_samples'].append(devices[0].memory_stats())
-        print('profile',record,flush=True)
+        print('profile',{k:v for k,v in record.items()
+            if k not in ('parameter_names','parameter_values')},flush=True)
         save()
     save()
     try:
