@@ -36,6 +36,39 @@ def save_json(path, report):
     temporary.replace(path)
 
 
+def process_group_memory(group, *, details=False):
+    """Current RSS by process; optional PSS/private pages explain shared forks.
+
+    Only process names and memory counters are read, never arguments or the
+    environment. PSS is diagnostic; the existing aggregate RSS guard is unchanged.
+    """
+    result = []
+    for item in Path('/proc').glob('[0-9]*/stat'):
+        try:
+            raw = item.read_text()
+            fields = raw.rsplit(')', 1)[1].split()
+            if int(fields[2]) != group:
+                continue
+            row = dict(pid=int(item.parent.name), parent_pid=int(fields[1]),
+                name=raw.split('(', 1)[1].rsplit(')', 1)[0],
+                rss_mib=int(fields[21])*os.sysconf('SC_PAGE_SIZE')/2**20)
+            if details:
+                try:
+                    counters = {}
+                    for line in (item.parent/'smaps_rollup').read_text().splitlines():
+                        key, _, value = line.partition(':')
+                        if key in ('Rss', 'Pss', 'Private_Clean', 'Private_Dirty'):
+                            counters[key] = float(value.split()[0])/1024
+                    row.update(pss_mib=counters.get('Pss'),
+                        private_mib=counters.get('Private_Clean', 0.)+counters.get('Private_Dirty', 0.))
+                except (OSError, ValueError) as exc:
+                    row['smaps_error'] = type(exc).__name__
+            result.append(row)
+        except (OSError, ValueError, IndexError):
+            continue
+    return result
+
+
 def provenance():
     return dict(started_utc=datetime.now(timezone.utc).isoformat(), host=platform.node(),
         workdir=str(Path.cwd()), cpu_affinity=sorted(os.sched_getaffinity(0)),

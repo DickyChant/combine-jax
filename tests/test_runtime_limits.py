@@ -95,6 +95,9 @@ def test_failed_batch_fit_transfers_checkpoint_without_masking_failure(tmp_path,
     def stage(command, environment, log):
         if log.name == 'fit.log':
             (log.parent/'fit.json').write_text('{' if truncated else json.dumps(checkpoint))
+            log.with_suffix('.resources.json').write_text(json.dumps(dict(
+                status='failed', sampled_group_peak_rss_mib=12000.,
+                processes_at_peak=[dict(pid=123, rss_mib=12000.)])))
             raise RuntimeError('original fit failure')
         return dict(wall_seconds=0.)
 
@@ -105,8 +108,28 @@ def test_failed_batch_fit_transfers_checkpoint_without_masking_failure(tmp_path,
         controller.run_limits(args)
     receipt = json.loads(output.with_suffix('.json').read_text())
     assert receipt['status'] == 'failed' and 'original fit failure' in receipt['error']
+    assert receipt['stages']['fit']['processes_at_peak'] == [dict(pid=123, rss_mib=12000.)]
     assert not output.exists()
     if truncated:
         assert 'fit_checkpoint_error' in receipt and 'fit' not in receipt
     else:
         assert receipt['fit'] == checkpoint
+
+
+def test_memory_guard_preserves_parent_and_child_attribution(tmp_path):
+    import os
+    import sys
+    from combine_jax.runtime.controller import stage
+    child = 'import time; data=bytearray(48*1024**2); time.sleep(30)'
+    parent = ('import subprocess,sys,time; data=bytearray(48*1024**2); '
+              f'subprocess.Popen([sys.executable,"-c",{child!r}]); time.sleep(30)')
+    log = tmp_path/'stage.log'
+    with pytest.raises(MemoryError, match='Process group RSS'):
+        stage([sys.executable, '-c', parent], dict(os.environ), log, rss_limit_mib=96.)
+    evidence = json.loads(log.with_suffix('.resources.json').read_text())
+    assert evidence['status'] == 'failed' and evidence['sampled_group_peak_rss_mib'] > 96.
+    rows = evidence['processes_at_peak']
+    assert len(rows) >= 2 and sum(row['rss_mib'] for row in rows) > 96.
+    assert any(row['parent_pid'] in {p['pid'] for p in rows} for row in rows)
+    assert evidence['detailed_process_sample'] and evidence['returncode'] != 0
+    assert all('pss_mib' in row or 'smaps_error' in row for row in evidence['detailed_process_sample'])

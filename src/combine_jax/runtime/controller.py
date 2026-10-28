@@ -9,44 +9,55 @@ import tempfile
 import time
 
 from .options import request
-from .resources import save_json, sha
+from .resources import process_group_memory, save_json, sha
 
 
 def stage(command, environment, log, *, rss_limit_mib=11264):
     """Bound aggregate process-group RSS, preserving logs on any failure."""
     started = time.perf_counter()
-    peak = 0
-    with log.open('w') as stream:
-        process = subprocess.Popen(command, env=environment, stdout=stream,
-                                   stderr=subprocess.STDOUT,start_new_session=True)
-        try:
+    process = None
+    report = dict(status='running', sampled_group_peak_rss_mib=0.,
+        rss_limit_mib=rss_limit_mib, log=str(log), processes_at_peak=[], samples=0)
+    resource_path = log.with_suffix('.resources.json')
+    try:
+        with log.open('w') as stream:
+            process = subprocess.Popen(command, env=environment, stdout=stream,
+                                       stderr=subprocess.STDOUT,start_new_session=True)
             while process.poll() is None:
-                rss = 0
-                for item in Path('/proc').glob('[0-9]*/stat'):
-                    try:
-                        fields = item.read_text().rsplit(')',1)[1].split()
-                        if int(fields[2]) == process.pid:
-                            rss += int(fields[21])*os.sysconf('SC_PAGE_SIZE')/2**20
-                    except (OSError,ValueError,IndexError):
-                        pass
-                peak = max(peak,rss)
+                rows = process_group_memory(process.pid)
+                rss = sum(row['rss_mib'] for row in rows)
+                report['samples'] += 1
+                if rss > report['sampled_group_peak_rss_mib']:
+                    # Keep the RSS sample that triggered the decision. Detailed
+                    # counters are a subsequent sample; processes may exit in
+                    # between, which must not erase the recorded peak.
+                    report.update(sampled_group_peak_rss_mib=rss, processes_at_peak=rows,
+                        detailed_process_sample=process_group_memory(process.pid, details=True))
+                    report['wall_seconds'] = time.perf_counter()-started
+                    save_json(resource_path, report)
                 if rss > rss_limit_mib:
                     raise MemoryError(f'Process group RSS {rss:.1f} MiB exceeds {rss_limit_mib} MiB')
                 time.sleep(.5)
             if process.returncode:
                 tail = '\n'.join(log.read_text(errors='replace').splitlines()[-20:])
                 raise RuntimeError(f'Stage exited {process.returncode}; log {log}\n{tail}')
-        except BaseException:
-            if process.poll() is None:
-                os.killpg(process.pid,signal.SIGTERM)
-                try:
-                    process.wait(timeout=10)
-                except subprocess.TimeoutExpired:
-                    os.killpg(process.pid,signal.SIGKILL)
-                    process.wait()
-            raise
-    return dict(wall_seconds=time.perf_counter()-started, sampled_group_peak_rss_mib=peak,
-                rss_limit_mib=rss_limit_mib, log=str(log), log_sha256=sha(log))
+        report['status'] = 'complete'
+    except BaseException as exc:
+        report.update(status='failed', error=repr(exc))
+        raise
+    finally:
+        if process is not None and process.poll() is None:
+            os.killpg(process.pid,signal.SIGTERM)
+            try:
+                process.wait(timeout=10)
+            except subprocess.TimeoutExpired:
+                os.killpg(process.pid,signal.SIGKILL)
+                process.wait()
+        report.update(wall_seconds=time.perf_counter()-started,
+            returncode=process.returncode if process is not None else None,
+            log_sha256=sha(log) if log.exists() else None)
+        save_json(resource_path, report)
+    return report
 
 
 def run_limits(args):
@@ -89,8 +100,13 @@ def run_limits(args):
     lcg = ['bash',str(module/'run_lcg.sh'),str(prefix),runtime['lcg_view']]
     def run(name,command,env):
         print('Starting',name,flush=True)
-        report['stages'][name] = stage(command,env,workdir/(name+'.log'))
-        save_json(sidecar,report)
+        try:
+            report['stages'][name] = stage(command,env,workdir/(name+'.log'))
+        finally:
+            evidence = workdir/(name+'.resources.json')
+            if name not in report['stages'] and evidence.exists():
+                report['stages'][name] = json.loads(evidence.read_text())
+            save_json(sidecar,report)
     try:
         # Fail a bad CUDA allocation before spending time generating/importing.
         run('device_check',lcg+['-m','combine_jax.runtime.fit','--verify',args.backend],environment)
