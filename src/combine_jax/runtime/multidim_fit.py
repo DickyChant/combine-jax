@@ -64,6 +64,7 @@ def main(request_path, preparation_path, output):
         driver = MultiDimProfiler(model, conditional_parameters=groups,
             compiler_memory_limit_gib=config['static_guard_gib'], defer_compile=True,
             edm_validation=config['edm_validation'],
+            global_edm_validation=config.get('global_edm_validation'),
             compile_progress=compile_progress, fit_progress=fit_progress)
         del model
         release_compilation_cache()
@@ -76,6 +77,8 @@ def main(request_path, preparation_path, output):
             report['rows'] = scan(driver, config['pois'], config['points'], nll0=nll0)
         else:
             delta = DELTA68 if config['robust_fit'] else preparation['generation']['minos_delta_nll']
+            if delta is None:
+                raise NotImplementedError('Native Minos error definition has not been audited for this PDF type')
             result = impacts(driver, config['poi'], config['impact_parameters'], nll0=nll0, delta_nll=delta)
             report['impact_results'] = result
             if config['algo'] != 'batch-impacts':

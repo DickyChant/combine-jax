@@ -131,6 +131,12 @@ def from_workspace(workspace, *, model="ModelConfig", data="data_obs", registry=
         raise UnsupportedModelError("Channel mask count does not match the category")
 
     def factor(node, shapes):
+        if node.getAttribute('ignoreConstraint'):
+            if node.dependsOn(observables):
+                raise UnsupportedModelError(f'{node.GetName()}: ignoreConstraint on a data-dependent shape')
+            # Combine's redefineSignalPOIs marks the corresponding constraint
+            # PDF this way before constructing CachingSimNLL.
+            return
         if node.ClassName() == "RooProdPdf":
             for child in node.pdfList():
                 norm = node.findPdfNSet(child)

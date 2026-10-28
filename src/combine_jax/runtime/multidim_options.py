@@ -26,6 +26,8 @@ def add_multidim_command(commands):
     parser.add_argument('--robustFit', type=int, choices=(0, 1), default=0)
     parser.add_argument('--edm-validation', choices=('estimated', 'exact_hessian'), default='exact_hessian',
                         help='Exact final curvature checks EDM; both policies keep the 8 GiB guard')
+    parser.add_argument('--global-edm-validation', choices=('estimated', 'exact_hessian'),
+                        help='Explicit separate global-fit policy for models with unidentified POI directions')
     parser.add_argument('--seed', '-s', type=int, default=0)
     parser.add_argument('--name', '-n', default='Test')
     parser.add_argument('--backend', choices=('cpu', 'gpu'), default='gpu')
@@ -69,4 +71,5 @@ def request(args):
         run='expected', no_fit_asimov=True, signal_strength=values[pois[0]],
         backend=args.backend, discrete_policy=args.discrete_policy, template_convention='v10_density',
         float64=True, static_guard_gib=8., seed=args.seed, r_max=None,
-        edm_validation=args.edm_validation, robust_fit=bool(args.robustFit))
+        edm_validation=args.edm_validation, global_edm_validation=args.global_edm_validation,
+        robust_fit=bool(args.robustFit))

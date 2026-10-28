@@ -1184,7 +1184,8 @@ decompressed numeric array as immutable, avoiding a second complete host copy.
 The public bundle constructor still copies caller-owned arrays. Both paths
 enforce the same numeric schema, C-contiguous layout and structure checksum;
 no template precision or model contents change.
-# MultiDimFit methods (experimental; native law validation pending)
+
+## MultiDimFit methods (experimental; native law validation pending)
 
 The public `multidim` command (`-M MultiDimFit`) accepts explicit nominal Asimov
 generation values and `-t -1`. Native v10 generates that dataset, including its
@@ -1192,8 +1193,12 @@ global observables, and records the initial offset NLL without fitting data.
 The isolated importer applies FitterAlgoBase's `OPTIMIZE_BOUNDS` policy before
 lowering the model. MultiDimFit does not inherit the limit method's nonnegative
 POI range or its 1%-of-rMax starting point. Snapshot and observed execution are
-not enabled in this command. Constraint promotion to a new POI is explicitly
-unsupported until its native masking convention is validated.
+not enabled in this command. Redefining a nuisance as a POI removes it from the
+ModelConfig nuisance set and marks its `<name>_Pdf` with `ignoreConstraint`, as
+native Combine does. Both likelihood importers honor that explicit attribute.
+The counting Asimov convention is checked against native v10 at nominal plus
+25 random points. Other combinations of ignored constraints and analytic
+bin-stat profiling require their own coverage before a validation claim.
 
 One structural-sequential objective serves the global fit and conditional
 executables. Different fixed parameters reuse an executable with runtime index
@@ -1222,3 +1227,8 @@ fit too early, so that policy is explicit rather than silently certified for
 impacts. Exact curvature is unsupported for discrete envelopes with inactive
 shape directions. Scalable HVP-based EDM validation for large or discrete models
 remains separate work; passing a memory guard is required before execution.
+An explicit `--global-edm-validation estimated` can leave conditional curvature
+checks enabled while treating a globally unidentified POI direction separately.
+For example, at a zero-signal singlet point the data cannot constrain both
+couplings. This does not certify a global covariance. Receipts retain estimated
+and Hessian EDMs and distinguish which fits were curvature-validated.

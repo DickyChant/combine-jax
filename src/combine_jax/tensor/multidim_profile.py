@@ -16,7 +16,7 @@ class MultiDimProfiler(ProfileCompiler):
     def __init__(self, model, *, conditional_parameters, max_iterations=10000,
                  compiler_memory_limit_gib=8., release_compile_cache=True,
                  compile_progress=None, fit_progress=None, defer_compile=False,
-                 edm_validation='estimated'):
+                 edm_validation='estimated', global_edm_validation=None):
         import jax
         import numpy as np
         from scipy.special import chdtri
@@ -34,7 +34,10 @@ class MultiDimProfiler(ProfileCompiler):
         self.discrete = 'discrete_profile' in model.metadata
         if edm_validation not in ('estimated', 'exact_hessian'):
             raise ValueError('Unknown EDM validation policy')
-        if self.discrete and edm_validation == 'exact_hessian':
+        global_edm_validation = global_edm_validation or edm_validation
+        if global_edm_validation not in ('estimated', 'exact_hessian'):
+            raise ValueError('Unknown global EDM validation policy')
+        if self.discrete and 'exact_hessian' in (edm_validation, global_edm_validation):
             raise NotImplementedError('Inactive discrete-shape curvature cannot certify an exact full-space EDM')
         self.union = (model.arrays['discrete_profile__parameter_union'].copy()
                       if self.discrete else np.zeros(len(self.names), dtype=bool))
@@ -69,7 +72,8 @@ class MultiDimProfiler(ProfileCompiler):
                                                       for n in group})
             up = .5*float(chdtri(1, .32)) if not count else .5
             options = dict(max_iterations=max_iterations, stopping_criterion='edm',
-                           edm_tolerance=.002*.1*up, edm_validation=edm_validation,
+                           edm_tolerance=.002*.1*up,
+                           edm_validation=global_edm_validation if not count else edm_validation,
                            column_batch_size=1)
             if self.discrete:
                 fit = make_discrete_fit_function(model, _full_function=function,
@@ -118,7 +122,8 @@ class MultiDimProfiler(ProfileCompiler):
         elapsed = time.perf_counter()-start
         self.timings['execution_seconds'] += elapsed
         fields = ('status', 'value', 'iteration', 'function_evaluations',
-                  'gradient_evaluations', 'corrected_estimated_edm')
+                  'gradient_evaluations', 'corrected_estimated_edm',
+                  'hessian_edm', 'edm_curvature_validated', 'hessian_evaluations')
         record = {n: v.item() for n, v in jax.device_get({n: result[n][0] for n in fields}).items()}
         record.update(kind=key, fixed=dict(fixed), execution_seconds=elapsed)
         if self.discrete:

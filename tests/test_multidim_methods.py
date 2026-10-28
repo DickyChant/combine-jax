@@ -108,3 +108,46 @@ def test_multidim_cli_requires_explicit_asimov():
     config = request(parser.parse_args(base+['-t', '-1', '--setParameters', 'r=1']))
     assert config['signal_strength'] == 1. and config['float64']
     assert config['points'] == [{'r': -2.}, {'r': 0.}, {'r': 2.}]
+
+
+def test_promoted_nuisance_constraint_matches_native_nll(counting_path):
+    import jax
+    from combine_jax.root_io import load_caching_nll
+    from combine_jax.tensor.model import make_model_function
+    root = load_caching_nll()
+    with open_workspace(counting_path) as workspace:
+        mc = workspace.obj('ModelConfig')
+        workspace.pdf('bkg_Pdf').setAttribute('ignoreConstraint')
+        pois = root.RooArgSet(workspace.var('r'), workspace.var('bkg'))
+        mc.SetParametersOfInterest(pois)
+        nuis = root.RooArgSet(mc.GetNuisanceParameters()); nuis.remove(pois)
+        mc.SetNuisanceParameters(nuis)
+        model = from_workspace(workspace, fit_policy='combine_v11_default')
+        assert 'bkg_Pdf' not in model.metadata['constraint_names']
+        native = root.cacheutils.CachingSimNLL(mc.GetPdf(), workspace.data('data_obs'), mc.GetNuisanceParameters())
+        native.setAnalyticBarlowBeeston(True); native.clearConstantZeroPoint(); native.clearZeroPoint()
+        function = jax.jit(make_model_function(model, binned_gradient='structural_sequential'))
+        names = model.metadata['parameter_names']
+        initial = model.arrays['parameter_info__initial']
+        for r, bkg in [(0., -.4), (.7, .2), (2., 1.1)]:
+            theta = initial.copy(); theta[names.index('r')] = r; theta[names.index('bkg')] = bkg
+            for n, value in zip(names, theta): workspace.var(n).setVal(float(value))
+            assert float(function(theta, dict(model.arrays))) == pytest.approx(native.getVal(), abs=1e-10)
+
+
+def test_flat_global_direction_can_use_explicit_estimated_policy(counting_path, monkeypatch):
+    from combine_jax.tensor import model as model_module
+    with open_workspace(counting_path) as workspace:
+        model = from_workspace(workspace)
+    names = model.metadata['parameter_names']
+    r, lumi = names.index('r'), names.index('lumi')
+    def objective(theta, arrays):
+        return .5*(theta[r]-1.)**2+.5*theta[lumi]**2
+    monkeypatch.setattr(model_module, 'make_model_function', lambda *a, **k: objective)
+    driver = MultiDimProfiler(model, conditional_parameters=[('r', 'bkg')],
+        edm_validation='exact_hessian', global_edm_validation='estimated')
+    result = driver.global_minimum()
+    assert result['status'] == 0 and not result['edm_curvature_validated']
+    _, result = driver.profile({'r': 2., 'bkg': .2})
+    assert result['status'] == 0 and result['edm_curvature_validated']
+    assert result['value'] == pytest.approx(.5)

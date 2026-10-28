@@ -103,11 +103,16 @@ def generate(request_path, directory):
             variable = ws.var(poi_name)
             if not variable:
                 raise ValueError('Unknown POI '+poi_name)
-            if mc.GetNuisanceParameters() and mc.GetNuisanceParameters().find(poi_name):
-                raise NotImplementedError('Promoting a constrained nuisance to a POI awaits ignoreConstraint validation: '+poi_name)
             new_pois.add(variable)
             variable.setConstant(False)
+            constraint = ws.pdf(poi_name+'_Pdf')
+            if constraint:
+                constraint.setAttribute('ignoreConstraint')
         mc.SetParametersOfInterest(new_pois)
+        if mc.GetNuisanceParameters():
+            nuisances = R.RooArgSet(mc.GetNuisanceParameters())
+            nuisances.remove(new_pois)
+            mc.SetNuisanceParameters(nuisances)
     elif current_pois != [config['poi']]:
         raise ValueError('Requested POI must equal the single workspace POI: '+repr(current_pois))
     for name, limits in config['ranges'].items():
