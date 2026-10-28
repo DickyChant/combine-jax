@@ -23,6 +23,8 @@ def add_multidim_command(commands):
     parser.add_argument('--firstPoint', type=int, default=0)
     parser.add_argument('--lastPoint', type=int)
     parser.add_argument('--saveNLL', action='store_true')
+    parser.add_argument('--X-rtd', action='append', default=[], dest='runtime_definitions',
+                        help='Supported native convention: REMOVE_CONSTANT_ZERO_POINT=0 or 1')
     parser.add_argument('--robustFit', type=int, choices=(0, 1), default=0)
     parser.add_argument('--edm-validation', choices=('estimated', 'exact_hessian'), default='exact_hessian',
                         help='Exact final curvature checks EDM; both policies keep the 8 GiB guard')
@@ -42,6 +44,12 @@ def request(args):
     pois = args.poi.split(',')
     values = assignments(args.setParameters)
     bounds = ranges(args.setParameterRanges)
+    runtime_definitions = {}
+    for definition in args.runtime_definitions:
+        name, _, value = definition.partition('=')
+        if name != 'REMOVE_CONSTANT_ZERO_POINT' or value not in ('', '0', '1'):
+            raise ValueError('Unsupported MultiDimFit runtime definition: '+definition)
+        runtime_definitions[name] = int(value or '1')
     if not all(pois) or len(set(pois)) != len(pois):
         raise ValueError('Distinct nonempty POIs required')
     if set(pois)-values.keys():
@@ -72,4 +80,4 @@ def request(args):
         backend=args.backend, discrete_policy=args.discrete_policy, template_convention='v10_density',
         float64=True, static_guard_gib=8., seed=args.seed, r_max=None,
         edm_validation=args.edm_validation, global_edm_validation=args.global_edm_validation,
-        robust_fit=bool(args.robustFit))
+        robust_fit=bool(args.robustFit), runtime_definitions=runtime_definitions)

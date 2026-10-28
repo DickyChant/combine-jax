@@ -152,6 +152,11 @@ def generate(request_path, directory):
     if not multidim and config['r_max'] is not None:
         poi.setMax(config['r_max'])
     flags = {'TMCSO_AdaptivePseudoAsimov': 0, 'TMCSO_PseudoAsimov': 0}
+    if multidim:
+        definitions = config.get('runtime_definitions', {})
+        if set(definitions)-{'REMOVE_CONSTANT_ZERO_POINT'} or any(v not in (0, 1) for v in definitions.values()):
+            raise ValueError('Unsupported MultiDimFit native runtime definitions')
+        flags.update(definitions)
     for name, value in flags.items():
         R.runtimedef.set(name, value)
     discrete=discrete_snapshot(ws)

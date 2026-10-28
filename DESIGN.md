@@ -1190,6 +1190,11 @@ no template precision or model contents change.
 The public `multidim` command (`-M MultiDimFit`) accepts explicit nominal Asimov
 generation values and `-t -1`. Native v10 generates that dataset, including its
 global observables, and records the initial offset NLL without fitting data.
+`--X-rtd REMOVE_CONSTANT_ZERO_POINT=1` removes the native additive channel
+offsets when recording `nll0`; DHI supplies this flag by default. The CLI keeps
+native default offsets unless explicitly requested. This changes the reported
+constant only, not the JAX objective, profiles or gradients. Other unimplemented
+runtime definitions are rejected.
 The isolated importer applies FitterAlgoBase's `OPTIMIZE_BOUNDS` policy before
 lowering the model. MultiDimFit does not inherit the limit method's nonnegative
 POI range or its 1%-of-rMax starting point. Snapshot and observed execution are

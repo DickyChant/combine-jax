@@ -108,6 +108,12 @@ def test_multidim_cli_requires_explicit_asimov():
     config = request(parser.parse_args(base+['-t', '-1', '--setParameters', 'r=1']))
     assert config['signal_strength'] == 1. and config['float64']
     assert config['points'] == [{'r': -2.}, {'r': 0.}, {'r': 2.}]
+    config = request(parser.parse_args(base+['-t', '-1', '--setParameters', 'r=1',
+        '--X-rtd', 'REMOVE_CONSTANT_ZERO_POINT=1']))
+    assert config['runtime_definitions'] == {'REMOVE_CONSTANT_ZERO_POINT': 1}
+    with pytest.raises(ValueError, match='Unsupported MultiDimFit runtime'):
+        request(parser.parse_args(base+['-t', '-1', '--setParameters', 'r=1',
+            '--X-rtd', 'UNKNOWN_CHANGE=1']))
 
 
 def test_promoted_nuisance_constraint_matches_native_nll(counting_path):
