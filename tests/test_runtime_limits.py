@@ -71,3 +71,10 @@ def test_workspace_only_import_matches_card_checked_import(counting_path):
               for model in (checked,standalone)]
     np.testing.assert_array_equal(values[0][0],values[1][0])
     np.testing.assert_array_equal(values[0][1],values[1][1])
+
+
+def test_gpu_check_rejects_condor_mig_allocation_before_cuda(monkeypatch):
+    from combine_jax.runtime.fit import verify
+    monkeypatch.setenv('CUDA_VISIBLE_DEVICES','MIG-b05acb82-d929-50be-bab0-285bc5b18f63')
+    with pytest.raises(RuntimeError,match='MIG allocations are unsupported'):
+        verify('gpu')

@@ -11,6 +11,8 @@ from .resources import Resources, provenance, save_json, sha
 
 
 def verify(backend):
+    if backend == 'gpu' and 'MIG-' in os.environ.get('CUDA_VISIBLE_DEVICES', ''):
+        raise RuntimeError('MIG allocations are unsupported; request a full A100/H100 GPU')
     import jax
     devices = jax.devices()
     if not jax.config.x64_enabled or 'ROOT' in sys.modules:

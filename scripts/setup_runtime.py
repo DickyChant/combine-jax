@@ -44,6 +44,7 @@ def main():
         shutil.rmtree(prefix/'code')
     shutil.copytree(source/'src', prefix/'code/src',
                     ignore=shutil.ignore_patterns('__pycache__','*.pyc','*.egg-info'))
+    shutil.copyfile(source/'LICENSE', prefix/'code/LICENSE')
     revision = subprocess.check_output(['git','-C',str(source),'rev-parse','HEAD'], text=True).strip()
     dirty = bool(subprocess.check_output(['git','-C',str(source),'status','--porcelain'], text=True))
     libraries = list((args.native_cmssw/'lib').glob('*/libHiggsAnalysisCombinedLimit.so'))
@@ -56,7 +57,7 @@ def main():
         native_library_sha256=hashlib.sha256(libraries[0].read_bytes()).hexdigest(),
         lcg_view=os.environ.get('COMBINE_JAX_LCG_VIEW',VIEW),
         files={str(p.relative_to(prefix)):hashlib.sha256(p.read_bytes()).hexdigest()
-               for p in sorted((prefix/'code/src').rglob('*')) if p.is_file()})
+               for p in sorted((prefix/'code').rglob('*')) if p.is_file()})
     (prefix/'runtime.json').write_text(json.dumps(manifest, indent=2)+'\n')
     (prefix/'setup.sh').write_text('export DHI_COMBINE_JAX="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"\n'
                                    'export PATH="$DHI_COMBINE_JAX/bin:$PATH"\n')
