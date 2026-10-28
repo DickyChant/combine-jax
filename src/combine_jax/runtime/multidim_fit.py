@@ -42,7 +42,8 @@ def main(request_path, preparation_path, output):
     report = dict(provenance(), status='running', config=config, preparation=preparation,
         devices=[dict(platform=d.platform, kind=d.device_kind) for d in devices],
         versions={n: version(n) for n in ('jax', 'jaxlib', 'numpy', 'scipy')},
-        profiles=[], jax_allocator_samples=[], float64=True, static_guard_gib=8.)
+        profiles=[], jax_allocator_samples=[], float64=True, static_guard_gib=8.,
+        curvature_linearization='recompute', curvature_column_batch_size=1)
     if config['backend'] == 'gpu':
         report['versions']['jax-cuda12-plugin'] = version('jax-cuda12-plugin')
     def save():

@@ -29,6 +29,7 @@ def physical_parameters(z, coordinates):
 
 
 def make_fit_function(function, *, covariance=True, column_batch_size=4,
+                      curvature_linearization='reuse',
                       max_iterations=1000, max_linesearch=40, gradient_tolerance=1e-6,armijo_roundoff_multiplier=8.,
                       stopping_criterion='projected_gradient', edm_tolerance=1e-4, max_edm_refinements=3,
                       edm_validation='exact_hessian'):
@@ -56,6 +57,9 @@ def make_fit_function(function, *, covariance=True, column_batch_size=4,
     explicitly unavailable. Separate HVP uncertainty calculations can follow.
     ``errors`` and ``curvature_errors`` are covariance diagonal square roots;
     ``reported_errors`` separately applies Minuit's bounded finite-step convention.
+    ``curvature_linearization='recompute'`` rematerializes gradient intermediates
+    for each Hessian column batch instead of retaining the linearization tape.
+    It preserves exact AD curvature and all convergence thresholds.
     """
     import jax
     import jax.numpy as jnp
@@ -69,7 +73,8 @@ def make_fit_function(function, *, covariance=True, column_batch_size=4,
     optimize=make_bfgs(objective,max_iterations=max_iterations,max_linesearch=max_linesearch,
         gradient_tolerance=gradient_tolerance,armijo_roundoff_multiplier=armijo_roundoff_multiplier,
         stopping_criterion=stopping_criterion,edm_tolerance=edm_tolerance)
-    curvature=make_value_gradient_hessian(objective,column_batch_size=column_batch_size)
+    curvature=make_value_gradient_hessian(objective,column_batch_size=column_batch_size,
+        linearization=curvature_linearization)
 
     def fit(coordinates,arrays):
         c=coordinates;n=c['free_indices'].shape[0];total=c['reference'].shape[0]

@@ -1187,6 +1187,15 @@ no template precision or model contents change.
 
 ## MultiDimFit methods (1D law gate passed; 2D/impacts validation ongoing)
 
+Exact-curvature profile fits assemble one Hessian column at a time. They
+checkpoint the gradient linearization and recompute its intermediates inside
+each column, instead of holding the full residual tape throughout the Hessian
+loop. This preserves float64 AD derivatives, inverse-Hessian EDM checks and
+stopping tolerances. It trades computation for memory; the runtime receipt
+records the policy, measured compile footprint and execution time. The static
+8 GiB guard still applies before any fit dispatch.
+
+
 The public `multidim` command (`-M MultiDimFit`) accepts explicit nominal Asimov
 generation values and `-t -1`. Native v10 generates that dataset, including its
 global observables, and records the initial offset NLL without fitting data.

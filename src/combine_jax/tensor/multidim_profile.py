@@ -74,7 +74,7 @@ class MultiDimProfiler(ProfileCompiler):
             options = dict(max_iterations=max_iterations, stopping_criterion='edm',
                            edm_tolerance=.002*.1*up,
                            edm_validation=global_edm_validation if not count else edm_validation,
-                           column_batch_size=1)
+                           column_batch_size=1, curvature_linearization='recompute')
             if self.discrete:
                 fit = make_discrete_fit_function(model, _full_function=function,
                     _channel_function=small, **options)
