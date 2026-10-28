@@ -115,3 +115,19 @@ def test_bernstein_precomputed_basis_and_integrals(root,degree,restricted):
     if restricted:
         x.setRange('reference',100.,180.);shape.selectNormalizationRange('reference',True);x.setRange(110.,170.)
     model=bind_model(root,shape,[x],{'bx':np.linspace(x.getMin(),x.getMax(),9)[1:-1]});check_model(model)
+
+
+@pytest.mark.parametrize('degree',[1,2,4,7])
+def test_fast_bernstein_stored_matrix_and_implicit_coefficient(root,degree):
+    from test_bernstein_fast import make_fast_bernstein
+    root=load_caching_nll()
+    x,coefficients,shape=make_fast_bernstein(root,degree)
+    # Keep native central finite differences in the positive-density domain.
+    for i,coefficient in enumerate(coefficients):
+        coefficient.setRange(.2,2.5);coefficient.setVal(1.+.1*i)
+    model=bind_model(root,shape,[x],{x.GetName():np.linspace(x.getMin(),x.getMax(),9)[1:-1]})
+    check_model(model)
+    compact=pack_binned_channels(model['nodes'],model['rows'],model['scalar'],compact_data=True)
+    values=model['sf'](model['old'].initial,model['arrays']['s'])
+    actual=jax.jit(make_binned_function(compact))(values,jax.device_put(dict(compact.arrays)))
+    np.testing.assert_allclose(actual,model['native'](model['old'].initial),rtol=0,atol=1e-9)

@@ -45,7 +45,7 @@ def add_limits_command(commands):
     parser.add_argument('--seed', '-s', type=int, default=0)
     parser.add_argument('--name', '-n', default='Test')
     parser.add_argument('--backend', choices=('cpu','gpu'), default='gpu')
-    parser.add_argument('--discrete-policy', choices=('reject','fixed'), default='reject')
+    parser.add_argument('--discrete-policy', choices=('reject','fixed','profile'), default='reject')
     parser.add_argument('--output', type=Path)
     parser.add_argument('--workdir', type=Path)
     parser.add_argument('--runtime', type=Path, help='Runtime prefix created by scripts/setup_runtime.sh')

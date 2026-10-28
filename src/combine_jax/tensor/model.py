@@ -244,5 +244,9 @@ def from_workspace(workspace,datacard=None,*,data='data_obs',analytic_barlow_bee
         model=compose_templates(scalars,constraints,channels,templates,offset=exported.offset,provenance=provenance)
     else:
         model=compose_counting(scalars,constraints,channels,offset=exported.offset,provenance=provenance)
+    if discrete_policy=='profile':
+        from .discrete import attach_discrete_profile
+        model=attach_discrete_profile(model,nodes,rows,scalars,
+            constraint_names=exported.constraints,compact_data=compact_shape_data)
     from .parameter_info import attach_parameter_info,pack_parameter_info
     return attach_parameter_info(model,pack_parameter_info(exported.parameters))

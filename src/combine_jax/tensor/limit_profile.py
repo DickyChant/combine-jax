@@ -72,6 +72,12 @@ class LimitProfiler:
             'global': jax.device_put({n: global_c[n][None, ...] for n in COORDINATE_FIELDS}),
             'conditional': jax.device_put({n: conditional[n][None, ...] for n in COORDINATE_FIELDS})}
         self.arrays = jax.device_put({n: a for n, a in model.arrays.items() if not n.startswith('parameter_info__')})
+        self.discrete = 'discrete_profile' in model.metadata
+        if self.discrete:
+            union=model.arrays['discrete_profile__parameter_union']
+            short=fit_coordinates(info,initial=point,fixed={n:float(v) for n,v,use in
+                zip(names,point,union,strict=True) if not use})
+            self.arrays.update(jax.device_put({'discrete_fit__'+n:short[n] for n in COORDINATE_FIELDS}))
         self.warm = jax.device_put(point)
         function = make_model_function(model, binned_gradient='structural_sequential')
         self.executables = {}
@@ -88,8 +94,16 @@ class LimitProfiler:
         for name, up in [('global', up_global), ('conditional', .5)]:
             if name not in compile_kinds:
                 continue
-            scan = make_profile_scan_function(function, max_iterations=max_iterations,
-                stopping_criterion='edm', edm_tolerance=.002*.1*up, edm_validation='estimated')
+            options=dict(max_iterations=max_iterations,stopping_criterion='edm',
+                edm_tolerance=.002*.1*up,edm_validation='estimated')
+            if self.discrete:
+                from .discrete_fit import make_discrete_fit_function
+                discrete_fit=make_discrete_fit_function(model,**options)
+                def scan(coordinates,arrays,discrete_fit=discrete_fit):
+                    result=discrete_fit({n:v[0] for n,v in coordinates.items()},
+                        {n:arrays['discrete_fit__'+n] for n in COORDINATE_FIELDS},arrays)
+                    return {n:v[None,...] for n,v in result.items()}
+            else:scan = make_profile_scan_function(function,**options)
             self.executables[name] = self._compile(jax.jit(scan),
                 (self.coordinates[name], self.arrays), name, compiler_memory_limit_gib)
         if 'unprofiled' in compile_kinds:
@@ -138,7 +152,12 @@ class LimitProfiler:
         jax = self._jax
         fields = ('status', 'value', 'iteration', 'function_evaluations',
                   'gradient_evaluations', 'corrected_estimated_edm')
+        if self.discrete:
+            fields+=('discrete_iteration','discrete_delta','candidate_failures','continuous_fits','short_fits')
         summary = {k: v.item() for k, v in jax.device_get({k: result[k][0] for k in fields}).items()}
+        if self.discrete:
+            summary.update({k:jax.device_get(result[k][0]).tolist() for k in
+                ('discrete_indices','candidate_status','candidate_iterations','candidate_edm','candidate_indices')})
         summary.update(kind=kind, mu=mu)
         self.records.append(summary)
         if self.fit_progress is not None:
@@ -146,6 +165,8 @@ class LimitProfiler:
         if summary['status'] != 0:
             raise RuntimeError(f'{kind} fit failed at {self.poi}={mu}: {summary}')
         self.warm = result['values'][0]
+        if self.discrete:
+            self.arrays['binned__discrete_indices']=result['discrete_indices'][0]
         return float(summary['value'])
 
     def global_minimum(self, initial=None):

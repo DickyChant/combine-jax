@@ -1116,8 +1116,9 @@ changing them does not retrace the likelihood. A fixed category keeps the old
 selection. Constant templates are still folded, but their categorical selection
 stays dynamic. Penalties enter the raw NLL once per channel in the same flattened
 RooAddPdf locations as CachingAddNLL; they are not recomputed from the number of
-parameters left floating after freezing. The public limits CLI is still guarded
-until discrete minimization and native validation are complete.
+parameters left floating after freezing. The public limits CLI defaults to
+rejecting discrete models; `--discrete-policy profile` explicitly selects the
+new implementation, whose method-level native validation is reported separately.
 
 Native v10's default CascadeMinimizer performs an initial continuous fit, then
 alternates short scans over orthogonal index combinations with full continuous
@@ -1128,3 +1129,29 @@ masks constraints, and uses `MINIMIZER_multiMin_maskChannels=2`. Dhi's default
 Migrad strategy is 0 with tolerance 0.1 and fallbacks at 0.2 and 0.4. These
 conventions require their own native comparisons; a frozen-choice limit is not
 a discrete-profile result.
+
+The tensor implementation uses a device `while_loop` around full fits and a
+`scan` over cyclically reordered orthogonal combinations. The short objective
+contains only the compact discrete-channel program and freezes all common
+parameters. A change of category selects a new parameter mask without changing
+the compiled coordinate layout. Candidate fits reset the initially active
+parameters, as native v10 does; inactive alternatives retain their stored state.
+Every candidate must converge, as must the final full fit and the 0.001-NLL
+discrete iteration. Candidate status/EDM/counts are retained. The 15-iteration
+cap cannot silently turn an unresolved envelope into a successful result.
+
+This first implementation explicitly rejects constrained discrete shape
+parameters, shape parameters shared between categories or with non-discrete
+channels, and nested MultiPdfs. Those cases need additional native masking-offset
+validation. Common signal/yield parameters can still be shared and float in the
+full fit. These restrictions make differences of the compact channel NLLs an
+exact ranking of the full candidates while common parameters are frozen.
+
+Nominal errors attached to inactive workspace alternatives can be tiny despite
+appreciable allowed shape changes. For discrete shape coordinates only, the
+optimization scale is floored at 1% of a finite native parameter interval, or
+0.1*max(abs(nominal),1) for an unbounded interval. This prevents an uninformative
+initial BFGS metric from preventing all secant updates. It does not change
+starting values, physical bounds, float64 precision, EDM acceptance, penalties,
+or reported uncertainties. The fitter remains BFGS with the native stopping
+threshold, not a claimed identical Minuit2 trajectory or fallback implementation.

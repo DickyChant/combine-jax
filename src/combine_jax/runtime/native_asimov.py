@@ -2,6 +2,7 @@
 import fnmatch
 import hashlib
 import json
+import math
 import os
 from pathlib import Path
 import resource
@@ -16,6 +17,44 @@ def digest(path):
         for block in iter(lambda: stream.read(8*1024**2), b''):
             result.update(block)
     return result.hexdigest()
+
+
+def discrete_snapshot(workspace):
+    """Export native stored penalties and active names, without fitting data.
+
+    ROOT 6.30's Combine RooMultiPdf has no public indexCategory accessor, so
+    locate its category among its variables. Restore the index after inspection.
+    """
+    mc=workspace.obj('ModelConfig')
+    result={}
+    components=mc.GetPdf().getComponents()
+    for pdf in components:
+        if pdf.ClassName()!='RooMultiPdf':
+            continue
+        variables=pdf.getVariables()
+        categories=[v for v in variables if v.InheritsFrom('RooAbsCategory')]
+        if len(categories)!=1:
+            raise ValueError('RooMultiPdf must have one index category: '+pdf.GetName())
+        category=categories[0]
+        initial=int(category.getIndex())
+        alternatives=[]
+        try:
+            for index in range(pdf.getNumPdfs()):
+                category.setIndex(index)
+                alternative=pdf.getPdf(index)
+                penalty=float(pdf.getCorrection())
+                if not math.isfinite(penalty):
+                    raise ValueError('Nonfinite native discrete penalty')
+                parameters=alternative.getParameters(mc.GetObservables())
+                alternatives.append(dict(index=index,name=str(alternative.GetName()),
+                    pdf_class=str(alternative.ClassName()),correction=penalty,
+                    parameters=sorted(str(v.GetName()) for v in parameters
+                        if v.InheritsFrom('RooRealVar') and not v.isConstant())))
+        finally:
+            category.setIndex(initial)
+        result[str(pdf.GetName())]=dict(category=str(category.GetName()),
+            initial_index=initial,category_constant=bool(category.isConstant()),alternatives=alternatives)
+    return result
 
 
 def generate(request_path, directory):
@@ -96,6 +135,7 @@ def generate(request_path, directory):
     flags = {'TMCSO_AdaptivePseudoAsimov': 0, 'TMCSO_PseudoAsimov': 0}
     for name, value in flags.items():
         R.runtimedef.set(name, value)
+    discrete=discrete_snapshot(ws)
     nominal = {v.GetName(): float(v.getVal()) for collection in
                (mc.GetNuisanceParameters(), mc.GetGlobalObservables()) for v in (collection or ())
                if v.InheritsFrom('RooAbsReal')}
@@ -106,6 +146,8 @@ def generate(request_path, directory):
     for name, value in nominal.items():
         if ws.var(name).getVal() != value:
             raise RuntimeError('Generation changed nominal '+name)
+    if discrete_snapshot(ws)!=discrete:
+        raise RuntimeError('Generation changed nominal discrete configuration')
     name = 'combine_jax_asimov_bonly'
     if ws.data(name):
         raise ValueError('Reserved Asimov name already exists')
@@ -127,7 +169,7 @@ def generate(request_path, directory):
         poi=config['poi'], signal_strength=0., mode='prefit', frozen_parameters=sorted(frozen),
         root_version=R.gROOT.GetVersion(), combine_version=version,
         version_source='installer declaration, bound to native library SHA256', library_sha256=digest(library),
-        cmssw=str(base), runtime_flags=flags,
+        cmssw=str(base), runtime_flags=flags,discrete=discrete,
         globals={v.GetName(): float(v.getVal()) for v in (mc.GetGlobalObservables() or ())},
         generation_seconds=time.perf_counter()-start, reopen_verified=True,
         peak_rss_mib=resource.getrusage(resource.RUSAGE_SELF).ru_maxrss/1024)

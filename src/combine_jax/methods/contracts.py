@@ -17,6 +17,9 @@ def validate_expected_model(model, poi, *, run=None, no_fit_asimov=False, discre
         if (record.get('discrete_policy') != 'fixed'
                 or record.get('fixed_discrete_choices') != choices):
             raise ValueError('Fixed-discrete limit requires an explicit matching preparation record')
+    elif choices and discrete_policy=='profile' and 'discrete_profile' in model.metadata:
+        if record.get('discrete_policy')!='profile' or not record.get('native_discrete'):
+            raise ValueError('Profiled-discrete limit requires matching native preparation metadata')
     else:
         require_continuous_model(model.metadata)
     if model.metadata.get('parameter_info', {}).get('fit_policy', {}).get('nuisance_bounds_removed'):

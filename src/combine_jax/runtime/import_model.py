@@ -8,6 +8,20 @@ import sys
 import time
 
 
+def verify_discrete_penalties(choices,native_discrete):
+    if not native_discrete:
+        raise ValueError('Discrete profiling requires native-v10 category and penalty metadata')
+    for pdf,choice in choices.items():
+        native=native_discrete[pdf]
+        if choice['category']!=native['category'] or choice['index']!=native['initial_index']:
+            raise ValueError('Native/imported discrete category mismatch: '+pdf)
+        penalties=choice.get('corrections',[choice['correction']])
+        expected=([a['correction'] for a in native['alternatives']] if choice.get('profiled')
+            else [native['alternatives'][native['initial_index']]['correction']])
+        if list(penalties)!=expected:
+            raise ValueError('Native/imported stored discrete penalties differ: '+pdf)
+
+
 def main(request_path, generation_path, directory):
     if os.environ.get('JAX_PLATFORMS') != 'cpu':
         raise RuntimeError('ROOT import requires CPU JAX')
@@ -38,18 +52,23 @@ def main(request_path, generation_path, directory):
         data = workspace.data(name)
         assert data.numEntries() == generation['dataset']['entries']
         assert data.sumEntries() == generation['dataset']['sum_weights']
-        model = from_workspace(workspace, config['datacard'], data=name, template_convention='v10_density')
+        model = from_workspace(workspace, config['datacard'], data=name, template_convention='v10_density',
+            discrete_policy='profile' if config['discrete_policy']=='profile' else 'fixed')
     assert model.metadata['provenance']['dataset']['identity'] == identity
     choices = model.metadata['provenance']['discrete_choices']
-    if choices and config['discrete_policy'] != 'fixed':
-        raise NotImplementedError('RooMultiPdf profiling is not validated; --discrete-policy fixed must be explicit')
+    if choices and config['discrete_policy'] == 'reject':
+        raise NotImplementedError('RooMultiPdf requires explicit --discrete-policy profile or fixed')
+    if choices and config['discrete_policy']=='profile':
+        verify_discrete_penalties(choices,generation.get('discrete'))
     model.metadata['asymptotic_asimov'] = dict(poi=config['poi'], signal_strength=0., mode='prefit',
         dataset=name, dataset_identity=identity, source_workspace_sha256=generation['source_workspace_sha256'],
         native_asimov_workspace_sha256=generation['workspace_sha256'],
         globals=generation['globals'], root_version=generation['root_version'], combine_version='10.3.3',
         template_convention='v10_density', native_generation=True,
         fit_bounds_policy='workspace_ranges_asymptotic', conditional_fit=None,
-        discrete_policy='fixed' if choices else 'profile', fixed_discrete_choices=choices)
+        discrete_policy=config['discrete_policy'] if choices else 'profile',
+        fixed_discrete_choices=choices if config['discrete_policy']=='fixed' else {},
+        native_discrete=generation.get('discrete',{}))
     model.save(directory/'model')
     report = dict(status='imported_native_v10_background_asimov', model=str(directory/'model'),
         model_sha256={n: digest(directory/'model'/n) for n in ('model.json','arrays.npz')},

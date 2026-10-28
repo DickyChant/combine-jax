@@ -10,9 +10,10 @@ import numpy as np
 from ..graph import UnsupportedModelError
 
 
-ANALYTIC_CLASSES=frozenset(('RooGaussian','RooExponential','RooPower','RooDoubleCB','RooErfExpPdf','RooBernstein'))
+FAST_BERNSTEIN_CLASSES=frozenset(f'RooBernsteinFast<{degree}>' for degree in range(1,8))
+ANALYTIC_CLASSES=FAST_BERNSTEIN_CLASSES|frozenset(('RooGaussian','RooExponential','RooPower','RooDoubleCB','RooErfExpPdf','RooBernstein'))
 ARITIES={'gaussian':2,'exponential':1,'power':1,'doublecb':7,'erfexp':3}
-ANALYTIC_OPERATIONS=frozenset(f'analytic_{kind}_{mode}' for kind in (*ARITIES,'bernstein') for mode in ('value','integral'))
+ANALYTIC_OPERATIONS=frozenset(f'analytic_{kind}_{mode}' for kind in (*ARITIES,'bernstein','fastbernstein') for mode in ('value','integral'))
 GRID_ANALYTIC_OPERATIONS=frozenset(op.replace('analytic_','gridanalytic_',1) for op in ANALYTIC_OPERATIONS)
 
 
@@ -23,23 +24,33 @@ def pack_analytic_query(name,node,mode,axes,coordinates,nodes,lookup,depends,row
         raise UnsupportedModelError(f'{name}: unsupported analytic query {cls}/{mode}')
     if cls=='RooExponential' and a['sign']<0:
         raise UnsupportedModelError(f'{name}: negated exponential differs between RooFit and v11 optimized CachingNLL; unsupported')
-    if cls=='RooBernstein':
-        axis=a['observable_name'];names=a['coefs'];degree=len(names)-1
+    if cls=='RooBernstein' or cls in FAST_BERNSTEIN_CLASSES:
+        fast=cls in FAST_BERNSTEIN_CLASSES
+        axis=a['observable_name'];names=a['coefs'];degree=len(names) if fast else len(names)-1
         if (mode=='integral' and axes!=(axis,)) or axis not in coordinates:
             raise UnsupportedModelError(f'{name}: Bernstein query requires its direct observable')
         if any((n not in lookup and not allow_grid) or depends(n,axis) for n in names):
             raise UnsupportedModelError(f'{name}: observable/profile-dependent Bernstein coefficient')
-        low,high=a['reference_range'];width=high-low
+        low,high=a['range' if fast else 'reference_range'];width=high-low
         if degree<0 or width<=0 or not math.isfinite(low+high):raise UnsupportedModelError(f'{name}: invalid Bernstein basis')
         x=(np.asarray(coordinates[axis])-low)/width
-        if mode=='value':basis=np.array([math.comb(degree,i)*x**i*(1-x)**(degree-i) for i in range(degree+1)])
+        if fast:
+            # Preserve Combine's stored power conversion matrix and implicit
+            # first Bernstein coefficient of one. Geometry is folded at import.
+            matrix=np.asarray(a['matrix'],dtype=np.float64)
+            if matrix.shape!=(degree+1,degree+1):raise UnsupportedModelError(f'{name}: invalid fast Bernstein matrix')
+            if mode=='value':powers=np.array([x**i for i in range(degree+1)])
+            else:powers=np.broadcast_to((width/np.arange(1,degree+2))[:,None],(degree+1,rows))
+            basis=matrix.T@powers
+        elif mode=='value':basis=np.array([math.comb(degree,i)*x**i*(1-x)**(degree-i) for i in range(degree+1)])
         else:
             tmin=(nodes[axis][2]['minimum']-low)/width;tmax=(nodes[axis][2]['maximum']-low)/width
             weights=[sum((-1.)**(j-i)*math.comb(degree,j)*math.comb(j,i)*(tmax**(j+1)-tmin**(j+1))/(j+1)
                 for j in range(i,degree+1))*width for i in range(degree+1)]
             basis=np.broadcast_to(np.array(weights)[:,None],(degree+1,rows)).copy()
-        fields=dict(coefs=np.array([lookup.get(n,0) for n in names],dtype=np.int32),coef_mask=np.ones(len(names),dtype=bool),basis=basis)
-        return f'analytic_bernstein_{mode}',fields,tuple(names)
+        fields=dict(coefs=np.array([lookup.get(n,0) for n in names],dtype=np.int32),coef_mask=np.ones(len(names),dtype=bool),basis=basis[1:] if fast else basis)
+        if fast:fields['fixed_basis']=basis[0]
+        return f'analytic_{"fastbernstein" if fast else "bernstein"}_{mode}',fields,tuple(names)
     candidates=(tuple(n for n in a['fields'][:2] if n) if cls=='RooDoubleCB'
         else inputs[:2] if cls in ('RooGaussian','RooExponential') else inputs[:1])
     if mode=='integral':
@@ -87,10 +98,12 @@ def _tail(low,high,alpha,power,xp):
 
 def analytic_operation(op,scalars,b,xp=np,parameters=None):
     _,kind,mode=op.split('_')
-    if kind=='bernstein':
-        if parameters is not None:return xp.einsum('hcr,hcr->hr',parameters,b['basis'])
-        coefs=xp.where(b['coef_mask'],scalars[b['coefs']],0.)
-        return xp.einsum('hc,hcr->hr',coefs,b['basis'])
+    if kind in ('bernstein','fastbernstein'):
+        if parameters is not None:result=xp.einsum('hcr,hcr->hr',parameters,b['basis'])
+        else:
+            coefs=xp.where(b['coef_mask'],scalars[b['coefs']],0.)
+            result=xp.einsum('hc,hcr->hr',coefs,b['basis'])
+        return result+b['fixed_basis'] if kind=='fastbernstein' else result
     if xp is np:
         from scipy.special import erf,erfc
         barrier=lambda x:x
@@ -161,8 +174,9 @@ def validate_analytic_fields(op,b,rows):
     if op not in ANALYTIC_OPERATIONS|GRID_ANALYTIC_OPERATIONS:raise ValueError(f'Unknown analytic operation {op}')
     grid=op in GRID_ANALYTIC_OPERATIONS;layout=b['children'] if grid else b['coefs']
     kind=op.split('_')[1];batch=len(layout)
-    if kind=='bernstein':
+    if kind in ('bernstein','fastbernstein'):
         if b['basis'].shape!=(batch,layout.shape[1],rows):raise ValueError('Invalid Bernstein basis layout')
+        if kind=='fastbernstein' and b['fixed_basis'].shape!=(batch,rows):raise ValueError('Invalid fixed Bernstein basis layout')
         return
     if layout.shape!=((batch,ARITIES[kind],rows) if grid else (batch,ARITIES[kind])) or b['data'].shape!=(batch,rows):
         raise ValueError('Invalid analytic parameter/data layout')
