@@ -37,6 +37,8 @@ def run_expected_model(model, poi, *, options=None, r_max=None, max_iterations=1
     result.update(status='computed_pending_native_validation', method='AsymptoticLimits', poi=poi,
         dataset=provenance, timings={**profiler.timings, 'execution_seconds':elapsed},
         compiler_memory=profiler.compiler_memory, profile_fits=profiler.records,
+        global_seed_checks=getattr(profiler, 'global_seed_checks', []),
+        global_seed_function_evaluations=len(getattr(profiler, 'global_seed_checks', [])),
         evaluation_counts={key: sum(row[key] for row in profiler.records) for key in
             ('function_evaluations', 'gradient_evaluations', 'iteration')},
         gradient_policy='structural_sequential', float64=True,

@@ -1246,3 +1246,18 @@ checks enabled while treating a globally unidentified POI direction separately.
 For example, at a zero-signal singlet point the data cannot constrain both
 couplings. This does not certify a global covariance. Receipts retain estimated
 and Hessian EDMs and distinguish which fits were curvature-validated.
+
+
+### Conditional profiles and a known feasible seed
+
+EDM convergence alone does not prove that a warm-started conditional fit found
+the lowest branch. After each expected-limit conditional fit, compare its NLL
+with the saved global nuisance vector at the same fixed POI, including the
+saved discrete categories. If that feasible seed has lower NLL beyond 64 ULP
+of floating-point roundoff, refit from it with the same bounds, EDM threshold
+and iteration budget. Reject a restart that worsens its own seed. Both fits,
+seed NLLs and extra objective-call counts remain in the receipt. Parameters
+stay on device; only scalar diagnostics are read by the crossing controller.
+The global denominator, crossing formulae and stopping tolerances are unchanged.
+This detects a dominated local basin; it does not guarantee a global minimum
+when the alternate seed itself has a higher unprofiled NLL.

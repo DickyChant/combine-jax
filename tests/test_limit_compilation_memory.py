@@ -82,3 +82,37 @@ def test_deferred_compilation_does_not_retain_the_imported_model(counting_path):
     delayed.compile()
     np.testing.assert_array_equal(delayed.global_minimum(), baseline)
     np.testing.assert_array_equal([delayed(mu) for mu in (0., .4, 1.)], expected)
+
+
+def test_profile_recovers_a_converged_but_dominated_warm_basin(counting_path, monkeypatch):
+    import jax.numpy as jnp
+    from combine_jax.tensor import model as model_module
+    with open_workspace(counting_path) as workspace:
+        model = from_workspace(workspace, 'tests/cards/counting.txt')
+    names = model.metadata['parameter_names']
+    r, b, lumi = (names.index(n) for n in ('r', 'bkg', 'lumi'))
+    def objective(theta, arrays):
+        x = theta[b]
+        t = (x+1)/2
+        # Two stationary minima at x=-1 and +1, separated by a barrier;
+        # both have zero gradient, but the latter is higher by exactly 0.6.
+        return .5*theta[r]**2 + 100*(x*x-1)**2 + .6*(3*t*t-2*t*t*t) + .5*theta[lumi]**2
+    monkeypatch.setattr(model_module, 'make_model_function', lambda *a, **k: objective)
+    profiler = LimitProfiler(model, 'r', global_up=.5)
+    seed = profiler.initial.at[r].set(0.).at[b].set(-1.).at[lumi].set(0.)
+    minimum = profiler.global_minimum(initial=seed)
+    assert abs(minimum) < 1e-12
+    profiler.warm = seed.at[b].set(1.)
+    recovered = profiler(.2)
+    assert abs(recovered-.02) < 1e-12
+    assert [p['kind'] for p in profiler.records[-2:]] == ['conditional', 'conditional_global_restart']
+    assert all(p['status'] == 0 for p in profiler.records)
+    assert abs(profiler.records[-2]['value']-.62) < 1e-12
+    assert profiler.global_seed_checks[-1]['restarted']
+    assert abs(profiler.global_seed_checks[-1]['seed_nll']-.02) < 1e-12
+    np.testing.assert_allclose(profiler.point()[b], -1., atol=1e-12)
+    # The saved global solution is immutable; ordinary profiles need no retry.
+    np.testing.assert_array_equal(profiler._global_point, seed)
+    before = len(profiler.records)
+    assert abs(profiler(.3)-.045) < 1e-12
+    assert len(profiler.records) == before+1

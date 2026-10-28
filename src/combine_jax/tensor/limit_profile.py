@@ -94,6 +94,7 @@ class LimitProfiler(ProfileCompiler):
         self.timings = dict(prepare_seconds=time.perf_counter()-start, compile_seconds=0., lower_seconds=0.,
                             cache_release_seconds=0.)
         self.records = []
+        self.global_seed_checks = []
         self._global_point = None
         self._global_indices = None
         self._global_value = None
@@ -184,7 +185,33 @@ class LimitProfiler(ProfileCompiler):
         return self._accept(result, 'global', None)
 
     def __call__(self, mu):
-        return self._conditional(mu)
+        value = self._conditional(mu)
+        if self._global_point is None or 'unprofiled' not in self.executables:
+            return value
+        # A converged warm start can remain in a worse local basin. Its NLL
+        # must not exceed a known feasible point: the saved global nuisance
+        # vector with this POI fixed. Check that certificate without moving
+        # parameters off device; only the scalar decision reaches the host.
+        arrays = ({**self.arrays, 'binned__discrete_indices': self._global_indices}
+                  if self.discrete else self.arrays)
+        seed_value = float(self.executables['unprofiled'](
+            self._global_point.at[self.index].set(mu), arrays))
+        import math
+        allowance = 64*math.ulp(max(abs(value), abs(seed_value), 1.))
+        restart = math.isfinite(seed_value) and value > seed_value+allowance
+        self.global_seed_checks.append(dict(mu=float(mu), warm_nll=value,
+            seed_nll=seed_value if math.isfinite(seed_value) else None,
+            roundoff_allowance=allowance if math.isfinite(allowance) else None,
+            restarted=restart))
+        if not restart:
+            return value
+        self.warm = self._global_point
+        if self.discrete:
+            self.arrays['binned__discrete_indices'] = self._global_indices
+        recovered = self._conditional(mu, kind='conditional_global_restart')
+        if recovered > seed_value+allowance:
+            raise RuntimeError('Conditional restart worsened its feasible global seed')
+        return recovered
 
     def _conditional(self, mu, kind='conditional'):
         c = self.coordinates['conditional']
