@@ -71,8 +71,7 @@ def main(request_path, preparation_path, output):
         save()
     save()
     try:
-        model = TensorBundle.load(model_path)
-        result = run_expected_model(model, config['poi'],
+        result = run_expected_model(TensorBundle.load(model_path), config['poi'],
             options=LimitOptions(confidence_level=config['confidence_level'],
                 r_abs_accuracy=config['r_abs_accuracy'],r_rel_accuracy=config['r_rel_accuracy']),
             r_max=config['r_max'],compiler_memory_limit_gib=config['static_guard_gib'],

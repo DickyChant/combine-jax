@@ -41,3 +41,22 @@ def test_selected_compilations_and_cache_release_preserve_fits(counting_path):
     # Releasing process-wide traces must leave the earlier explicit executable
     # usable too, including its standalone NLL.
     np.testing.assert_array_equal(reference.unprofiled(.4), expected[-1])
+
+
+def test_deferred_compilation_does_not_retain_the_imported_model(counting_path):
+    import gc
+    import weakref
+    with open_workspace(counting_path) as workspace:
+        model = from_workspace(workspace, 'tests/cards/counting.txt')
+    direct = LimitProfiler(model, 'r', global_up=.5)
+    baseline = direct.global_minimum()
+    expected = [direct(mu) for mu in (0., .4, 1.)]
+    delayed = LimitProfiler(model, 'r', global_up=.5, defer_compile=True,
+                            release_compile_cache=True)
+    owner = weakref.ref(model)
+    del model
+    gc.collect()
+    assert owner() is None and delayed.executables == {}
+    delayed.compile()
+    np.testing.assert_array_equal(delayed.global_minimum(), baseline)
+    np.testing.assert_array_equal([delayed(mu) for mu in (0., .4, 1.)], expected)

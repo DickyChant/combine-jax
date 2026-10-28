@@ -17,7 +17,8 @@ class LimitProfiler:
                  compiler_memory_limit_gib=8., max_iterations=10000,
                  global_up=None, global_start_fraction=.01,
                  compile_kinds=('global', 'conditional', 'unprofiled'),
-                 release_compile_cache=False, compile_progress=None, fit_progress=None):
+                 release_compile_cache=False, compile_progress=None, fit_progress=None,
+                 defer_compile=False):
         import jax
         import jax.numpy as jnp
         import numpy as np
@@ -84,6 +85,8 @@ class LimitProfiler:
             from .discrete import make_discrete_channels_function
             short_function = make_discrete_channels_function(model)
         self.executables = {}
+        self._pending_compile = {}
+        self._compiler_memory_limit_gib = compiler_memory_limit_gib
         self.compiler_memory = {}
         self.timings = dict(prepare_seconds=time.perf_counter()-start, compile_seconds=0., lower_seconds=0.,
                             cache_release_seconds=0.)
@@ -108,13 +111,27 @@ class LimitProfiler:
                         {n:arrays['discrete_fit__'+n] for n in COORDINATE_FIELDS},arrays)
                     return {n:v[None,...] for n,v in result.items()}
             else:scan = make_profile_scan_function(function,**options)
-            self.executables[name] = self._compile(jax.jit(scan),
-                (self.coordinates[name], self.arrays), name, compiler_memory_limit_gib)
+            self._pending_compile[name] = (jax.jit(scan), self.coordinates[name])
         if 'unprofiled' in compile_kinds:
-            self.executables['unprofiled'] = self._compile(jax.jit(function),
-                (self.warm, self.arrays), 'unprofiled', compiler_memory_limit_gib)
+            self._pending_compile['unprofiled'] = (jax.jit(function), self.warm)
         self.initial = jax.device_put(info.arrays['initial'])
         self._jax, self._jnp = jax, jnp
+        jax.block_until_ready(self.arrays)
+        self.timings['prepare_seconds'] = time.perf_counter()-start
+        if not defer_compile:
+            self.compile()
+
+    def compile(self):
+        """Compile prepared objectives after the caller can release host arrays.
+
+        The default constructor still compiles immediately. Deferred preparation
+        lets a GPU-only owner discard its neutral NumPy model before compiler
+        workers are created, while device buffers and objective metadata remain.
+        """
+        for name in tuple(self._pending_compile):
+            function, coordinates = self._pending_compile.pop(name)
+            self.executables[name] = self._compile(function,
+                (coordinates, self.arrays), name, self._compiler_memory_limit_gib)
 
     def _compile(self, function, arguments, name, limit):
         def progress(stage):

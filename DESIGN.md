@@ -1162,3 +1162,11 @@ conditional solvers. This avoids repeated host-side array validation; model
 buffers, numerical kernels and stopping rules are unchanged. After the global
 fit, its parameter vector is exported once into the receipt for explicit
 crossing diagnostics. Conditional fits retain their device-resident warm starts.
+
+The runtime passes temporary neutral-model ownership into the expected-limit
+driver. It prepares device inputs/objective closures, releases the host model,
+then compiles. The profiler also supports immediate compilation for existing
+callers; a caller retaining its model retains that memory. Static allocation
+and aggregate RSS guards are unchanged. RSS failures retain process-level
+measurements and diagnostic PSS/private-page counts; PSS does not replace the
+RSS acceptance rule.
