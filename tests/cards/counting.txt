@@ -1,0 +1,16 @@
+imax 2
+jmax 1
+kmax *
+------------
+shapes * * FAKE
+------------
+bin          signal_region control_region
+observation  17            23
+------------
+bin          signal_region signal_region control_region control_region
+process      signal        background    signal         background
+process      0             1             0              1
+rate         5             10            1              22
+------------
+lumi  lnN    1.05          -             1.05           -
+bkg   lnN    -             0.8/1.15      -              1.10

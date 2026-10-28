@@ -1,0 +1,23 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "combine-jax"
+version = "0.1.0"
+description = "Registry-driven JAX likelihoods for CMS Combine v11"
+requires-python = ">=3.11"
+dependencies = ["jax>=0.4.30", "numpy", "scipy", "iminuit"]
+
+[project.optional-dependencies]
+test = ["pytest"]
+
+[project.scripts]
+combine-jax = "combine_jax.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "--basetemp=build/pytest"
