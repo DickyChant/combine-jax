@@ -91,9 +91,10 @@ def test_gaussian_raw_normalized_and_integral(root):
 
 def test_unknown_class_is_named_even_if_constant(root):
     x = root.RooRealVar("x", "", 1., 0., 2.)
-    k = root.RooConstVar("k", "", -.2)
-    pdf = root.RooChebychev("unsupported_cheby", "", x, root.RooArgList(k))
-    with pytest.raises(UnsupportedModelError, match="RooChebychev: unsupported_cheby"):
+    k = root.RooConstVar("k", "", 1.2)
+    center = root.RooConstVar("center", "", 1.)
+    pdf = root.RooLognormal("unsupported_lognormal", "", x, center, k)
+    with pytest.raises(UnsupportedModelError, match="RooLognormal: unsupported_lognormal"):
         default_registry().export([pdf])
 
 

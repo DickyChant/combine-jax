@@ -4,7 +4,7 @@ from dataclasses import dataclass
 import numpy as np
 
 from ..graph import UnsupportedModelError
-from .scalar import SCALAR_CLASSES,OPERATIONS,UNARY,BINARY,operation as scalar_operation
+from .scalar import SCALAR_CLASSES,HGG_CLASSES,OPERATIONS,UNARY,BINARY,lower_hgg,operation as scalar_operation
 
 
 GRID_OPERATIONS=frozenset('gridexpr_'+op for op in OPERATIONS|{'select'})
@@ -29,7 +29,7 @@ def validate_grid_fields(op,b,rows):
     if op not in GRID_OPERATIONS:raise ValueError('Unknown coordinate expression operation')
     mask=b['operand_mask'];children=b['children']
     if mask.dtype!=bool or mask.shape!=(len(children),children.shape[1]-1):raise ValueError('Invalid coordinate expression mask')
-    arity=1 if kind in UNARY else 2 if kind in BINARY else 3 if kind in ('select','asymmetric_log') else None
+    arity=1 if kind in UNARY else 2 if kind in BINARY else 3 if kind in ('select','asymmetric_log','landau') else None
     if mask.shape[1]<1 or (arity is not None and (mask.shape[1]!=arity or not np.all(mask))):
         raise ValueError('Invalid coordinate expression arity')
 
@@ -117,7 +117,15 @@ class GridBuilder:
         else:
             cls,children,a=self.nodes[name];values=[self.node(n) for n in children]
             if cls=='RooFormulaVar':result=self.formula(a['ast'],values)
+            elif cls=='RooSpline1D' and values[0].fixed is not None:
+                from ..spline_math import value as spline_value
+                folded=spline_value(values[0].fixed,a,np)
+                if not np.all(np.isfinite(folded)):
+                    raise UnsupportedModelError(f'{name}: coordinate outside stored spline domain')
+                result=Value(fixed=folded)
             elif cls in ('RooProduct','RooAddition'):result=self.apply('product' if cls=='RooProduct' else 'sum',values)
+            elif cls=='RooCheapProduct':result=self.apply('product',[self.constant(a['folded_factor']),*values])
+            elif cls in HGG_CLASSES:result=lower_hgg(a,self.node,self.constant,self.apply)
             elif cls=='RooRecursiveFraction':result=self.apply('product',[values[0],*[self.apply('sub',[self.constant(1.),v]) for v in values[1:]]])
             elif cls=='AsymPow':
                 low,high,theta=values

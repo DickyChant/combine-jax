@@ -32,12 +32,12 @@ def make_structural_pullback(evaluate, densities, histogram_queries, program, nl
                 result[field] = jnp.arange(indices.size, dtype=jnp.int32).reshape(indices.shape)
         return result
 
-    def shape_pullback(op, values, scalars, b, value_bar, scalar_bar):
+    def shape_pullback(op, values, scalars, b, value_bar, scalar_bar, spec):
         local = local_fields(b, ('children', 'coefs'))
         children = gather(values, b['children']).reshape(-1) if 'children' in b else jnp.empty(0, dtype=jnp.float64)
         coefs = scalars[b['coefs']].reshape(-1) if 'coefs' in b else jnp.empty(0, dtype=jnp.float64)
         def term(child_values, coefficients):
-            return operation(op, child_values, coefficients, local, jnp)
+            return operation(op, child_values, coefficients, local, jnp, spec=spec)
         _, pullback = jax.vjp(term, children, coefs)
         children_bar, coefs_bar = pullback(gather(value_bar, b['outputs']))
         if 'children' in b:
@@ -113,10 +113,10 @@ def make_structural_pullback(evaluate, densities, histogram_queries, program, nl
                 # both cotangent accumulators stay on device throughout.
                 def step(index, state):
                     single = {k: jax.lax.dynamic_slice_in_dim(v, index, 1, axis=0) for k, v in b.items()}
-                    return shape_pullback(op, values, scalars, single, *state)
+                    return shape_pullback(op, values, scalars, single, *state, batch.get('spec'))
                 value_bar, scalar_bar = jax.lax.fori_loop(0, b['outputs'].shape[0], step, (value_bar, scalar_bar))
             else:
-                value_bar, scalar_bar = shape_pullback(op, values, scalars, b, value_bar, scalar_bar)
+                value_bar, scalar_bar = shape_pullback(op, values, scalars, b, value_bar, scalar_bar, batch.get('spec'))
 
         # Exact normalized histogram and query derivatives; repeated query/bin
         # destinations require accumulation, not an overwrite or a uniqueness hint.

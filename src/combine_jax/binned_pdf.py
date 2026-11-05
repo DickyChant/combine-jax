@@ -8,6 +8,7 @@ import numpy as np
 from .graph import UnsupportedModelError
 from .histograms import immutable_array
 from .root_io import load_root
+from .hist_pdf_geometry import integral_table
 
 
 @lru_cache(maxsize=1)
@@ -75,12 +76,9 @@ def hist_pdf_value(node, context):
 
 
 def hist_pdf_integral(node, context, axes):
-    if set(axes) != set(node.attrs["axes"]):
-        raise UnsupportedModelError(f"{node.name}: partial RooHistPdf integral over {axes}")
-    for name, edges in zip(node.attrs["axes"], node.attrs["edges"], strict=True):
-        low, high = context.bounds(name)
-        if low > edges[0] or high < edges[-1]:
-            raise UnsupportedModelError(f"{node.name}: restricted RooHistPdf integral range")
-    # ROOT integrates the stored weights, including negative bins which its
-    # point evaluator clips to zero. Keep these two operations distinct.
-    return jnp.asarray(node.attrs["sum_weights"])
+    names, edges, table = integral_table(node.name, node.attrs, axes,
+                                       {axis: context.bounds(axis) for axis in axes})
+    if not names: return jnp.asarray(table)
+    indices = [jnp.clip(jnp.searchsorted(jnp.asarray(edge), context.value(axis), side='right')-1,
+                        0, len(edge)-2) for axis, edge in zip(names, edges, strict=True)]
+    return jnp.asarray(table)[tuple(indices)]

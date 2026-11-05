@@ -11,9 +11,9 @@ from ..graph import UnsupportedModelError
 
 
 FAST_BERNSTEIN_CLASSES=frozenset(f'RooBernsteinFast<{degree}>' for degree in range(1,8))
-ANALYTIC_CLASSES=FAST_BERNSTEIN_CLASSES|frozenset(('RooGaussian','RooExponential','RooPower','RooDoubleCB','RooErfExpPdf','RooBernstein'))
-ARITIES={'gaussian':2,'exponential':1,'power':1,'doublecb':7,'erfexp':3}
-ANALYTIC_OPERATIONS=frozenset(f'analytic_{kind}_{mode}' for kind in (*ARITIES,'bernstein','fastbernstein') for mode in ('value','integral'))
+ANALYTIC_CLASSES=FAST_BERNSTEIN_CLASSES|frozenset(('RooGaussian','RooExponential','RooPower','RooDoubleCB','RooDoubleCBFast','RooErfExpPdf','RooBernstein','RooChebychev','RooSumTwoExpPdf','RooCBShape','RooLandau'))
+ARITIES={'gaussian':2,'exponential':1,'power':1,'doublecb':7,'doublecbfast':6,'erfexp':3,'sumtwoexp':4,'cbshape630':4,'cbshape640':4,'landau':2}
+ANALYTIC_OPERATIONS=frozenset(f'analytic_{kind}_{mode}' for kind in (*ARITIES,'bernstein','fastbernstein','chebychev') for mode in ('value','integral'))
 GRID_ANALYTIC_OPERATIONS=frozenset(op.replace('analytic_','gridanalytic_',1) for op in ANALYTIC_OPERATIONS)
 
 
@@ -24,6 +24,23 @@ def pack_analytic_query(name,node,mode,axes,coordinates,nodes,lookup,depends,row
         raise UnsupportedModelError(f'{name}: unsupported analytic query {cls}/{mode}')
     if cls=='RooExponential' and a['sign']<0:
         raise UnsupportedModelError(f'{name}: negated exponential differs between RooFit and v11 optimized CachingNLL; unsupported')
+    if cls=='RooChebychev':
+        from ..chebyshev_geometry import basis,integral_basis
+        axis=a['observable_name'];names=a['coefs'];degree=len(names)
+        if (mode=='integral' and axes!=(axis,)) or axis not in coordinates:
+            raise UnsupportedModelError(f'{name}: Chebychev query requires its direct observable')
+        if any((n not in lookup and not allow_grid) or depends(n,axis) for n in names):
+            raise UnsupportedModelError(f'{name}: observable/profile-dependent Chebychev coefficient')
+        low,high=a['reference_range'];half=.5*(high-low);mid=.5*(high+low)
+        if not math.isfinite(low+high) or half<=0:raise UnsupportedModelError(f'{name}: invalid Chebychev reference range')
+        if mode=='value':
+            table=basis(degree,(np.asarray(coordinates[axis])-mid)/half);fixed=np.ones(rows)
+        else:
+            lo,hi=(nodes[axis][2][n] for n in ('minimum','maximum'))
+            table=np.broadcast_to((half*integral_basis(degree,(lo-mid)/half,(hi-mid)/half))[:,None],(degree,rows)).copy()
+            fixed=np.full(rows,hi-lo,dtype=np.float64)
+        fields=dict(coefs=np.array([lookup.get(n,0) for n in names],dtype=np.int32),coef_mask=np.ones(degree,dtype=bool),basis=table,fixed_basis=fixed)
+        return f'analytic_chebychev_{mode}',fields,tuple(names)
     if cls=='RooBernstein' or cls in FAST_BERNSTEIN_CLASSES:
         fast=cls in FAST_BERNSTEIN_CLASSES
         axis=a['observable_name'];names=a['coefs'];degree=len(names) if fast else len(names)-1
@@ -66,12 +83,17 @@ def pack_analytic_query(name,node,mode,axes,coordinates,nodes,lookup,depends,row
     if cls=='RooDoubleCB':
         fields=a['fields'];other=fields[1] if axis==fields[0] else fields[0]
         names=(other,*fields[2:]);kind='doublecb';sign=1. if axis==fields[0] else -1.
+    elif cls=='RooSumTwoExpPdf':
+        names=(*a['fields'][1:4],a['fields'][4] if a['offset'] else None);kind='sumtwoexp'
+    elif cls=='RooCBShape':
+        if a['convention'] not in ('root630','root640'):raise UnsupportedModelError(f'{name}: unknown CBShape convention')
+        names=inputs[1:];kind='cbshape'+a['convention'].removeprefix('root')
     elif cls in ('RooGaussian','RooExponential'):
         other=inputs[1] if axis==inputs[0] else inputs[0]
         names=(other,*inputs[2:]);kind='gaussian' if cls=='RooGaussian' else 'exponential'
         if cls=='RooExponential':sign=float(a['sign'])
     else:
-        names=inputs[1:];kind='power' if cls=='RooPower' else 'erfexp'
+        names=inputs[1:];kind={'RooPower':'power','RooDoubleCBFast':'doublecbfast','RooErfExpPdf':'erfexp','RooLandau':'landau'}[cls]
     if candidates.count(axis)!=1 or any(n and depends(n,axis) for n in names):
         raise UnsupportedModelError(f'{name}: analytic shape parameters depend on integration/data variable {axis}')
     missing={n for n in names if n and n not in lookup}
@@ -86,6 +108,10 @@ def pack_analytic_query(name,node,mode,axes,coordinates,nodes,lookup,depends,row
     fields=dict(coefs=np.array([lookup.get(n,0) for n in names],dtype=np.int32),
         coef_mask=np.array([bool(n) for n in names],dtype=bool),data=np.asarray(coordinates[axis],dtype=np.float64),
         low=np.array(low),high=np.array(high),sign=np.array(sign))
+    if kind=='sumtwoexp':
+        if tuple(a['reference_range'])!=(low,high):
+            raise UnsupportedModelError(f'{name}: tensor SumTwoExp requires the exported default normalization range')
+        fields['default_mean']=np.array(91.2 if a['offset'] and not a['fields'][4] else 0.)
     return f'analytic_{kind}_{mode}',fields,tuple(names)
 
 
@@ -98,12 +124,12 @@ def _tail(low,high,alpha,power,xp):
 
 def analytic_operation(op,scalars,b,xp=np,parameters=None):
     _,kind,mode=op.split('_')
-    if kind in ('bernstein','fastbernstein'):
+    if kind in ('bernstein','fastbernstein','chebychev'):
         if parameters is not None:result=xp.einsum('hcr,hcr->hr',parameters,b['basis'])
         else:
             coefs=xp.where(b['coef_mask'],scalars[b['coefs']],0.)
             result=xp.einsum('hc,hcr->hr',coefs,b['basis'])
-        return result+b['fixed_basis'] if kind=='fastbernstein' else result
+        return result+b['fixed_basis'] if kind!='bernstein' else result
     if xp is np:
         from scipy.special import erf,erfc
         barrier=lambda x:x
@@ -137,6 +163,22 @@ def analytic_operation(op,scalars,b,xp=np,parameters=None):
         regular=xp.expm1(z)/xp.where(q!=0,q,1.)
         result=xp.exp(q*xp.log(safe_low))*xp.where(xp.abs(z)<1e-4,log_ratio*series,regular)
         result=xp.where(positive,result,xp.where(q>0,xp.exp(q*xp.log(high))/xp.where(q>0,q,1.),xp.inf))
+    elif kind=='doublecbfast':
+        from ..crystalball_fast_math import value,integral
+        if mode=='value':return value(x,*p,xp)
+        result=integral(low,high,*p,xp,erf)
+    elif kind=='sumtwoexp':
+        from ..twoexp_math import value
+        if mode=='value':return value(x,*p[:3],p[3]+b['default_mean'][:,None],low,high,xp)
+        result=xp.ones_like(x)
+    elif kind in ('cbshape630','cbshape640'):
+        from ..cbshape_math import value,integral
+        if mode=='value':return value(x,*p,xp,legacy=kind=='cbshape630')
+        result=integral(low,high,*p,xp,erf,legacy=kind=='cbshape630')
+    elif kind=='landau':
+        from ..landau_math import value,integral
+        if mode=='value':return value(x,*p,xp)
+        result=integral(low,high,*p,xp)
     elif kind=='doublecb':
         other,mean,width,a1,n1,a2,n2=p;abs1,abs2=xp.abs(a1),xp.abs(a2)
         valid=(width>0)&(a1!=0)&(a2!=0)&(n1>0)&(n2>0)
@@ -174,13 +216,15 @@ def validate_analytic_fields(op,b,rows):
     if op not in ANALYTIC_OPERATIONS|GRID_ANALYTIC_OPERATIONS:raise ValueError(f'Unknown analytic operation {op}')
     grid=op in GRID_ANALYTIC_OPERATIONS;layout=b['children'] if grid else b['coefs']
     kind=op.split('_')[1];batch=len(layout)
-    if kind in ('bernstein','fastbernstein'):
+    if kind in ('bernstein','fastbernstein','chebychev'):
         if b['basis'].shape!=(batch,layout.shape[1],rows):raise ValueError('Invalid Bernstein basis layout')
-        if kind=='fastbernstein' and b['fixed_basis'].shape!=(batch,rows):raise ValueError('Invalid fixed Bernstein basis layout')
+        if kind!='bernstein' and b['fixed_basis'].shape!=(batch,rows):raise ValueError('Invalid fixed polynomial basis layout')
         return
     if layout.shape!=((batch,ARITIES[kind],rows) if grid else (batch,ARITIES[kind])) or b['data'].shape!=(batch,rows):
         raise ValueError('Invalid analytic parameter/data layout')
     if any(b[n].shape!=(batch,) for n in ('low','high','sign')):
         raise ValueError('Invalid analytic geometry layout')
+    if kind=='sumtwoexp' and b['default_mean'].shape!=(batch,):
+        raise ValueError('Invalid SumTwoExp default offset layout')
     if np.any(b['high']<=b['low']) or np.any(np.abs(b['sign'])!=1.) or (kind=='power' and np.any(b['low']<0)):
         raise ValueError('Invalid analytic integration geometry')

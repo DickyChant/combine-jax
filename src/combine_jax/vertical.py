@@ -58,6 +58,14 @@ def vertical_integral(node, context, axes):
         raise UnsupportedModelError(f"{node.name}: observable-dependent vertical coefficient")
     result = vertical_interpolate([context.integral(f, axes) for f in node.attrs["functions"]],
                                   context.values(node.attrs["coefs"]), node.attrs)
+    # RooRealIntegral suppresses dirty propagation from its integrated axes.
+    # A SimpleProdPdf child can nevertheless retain a conditional histogram
+    # slice along one of them. For a full normalization ROOT caches that slice
+    # at the first evaluated row, rather than recomputing it for every event.
+    # Partial integrals with genuine remaining coordinates retain their rows.
+    if jnp.ndim(result) and result.size and not any(context.depends_on(node.name, axis)
+                                   for axis in context.data if axis not in axes):
+        result = result[context.normalization_row]
     # Match v11's advertised analytic integral, including its floor ordering.
     return jnp.where(result > 0, result, node.attrs["integral_floor"])
 

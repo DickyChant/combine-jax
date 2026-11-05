@@ -8,8 +8,16 @@ from .graph import UnsupportedModelError
 
 
 def extract_exponential(root):
+    from .root_io import load_root
+    axis = root.variable()
+    # Combine's optimized cache selects the sole leaf parameter, rather than
+    # coefficient(). Preserve this information separately from RooFit math.
+    cache_parameters = None
+    if axis.ClassName() == 'RooRealVar':
+        cache_parameters = tuple((str(p.GetName()), str(p.ClassName()))
+            for p in root.getParameters(load_root().RooArgSet(axis)))
     return (str(root.variable().GetName()), str(root.coefficient().GetName())), {
-        "sign": -1. if root.negateCoefficient() else 1.}
+        "sign": -1. if root.negateCoefficient() else 1., 'cache_parameters': cache_parameters}
 
 
 def exponential_value(node, context):

@@ -19,7 +19,6 @@ class MultiDimProfiler(ProfileCompiler):
                  edm_validation='estimated', global_edm_validation=None):
         import jax
         import numpy as np
-        from scipy.special import chdtri
         from .model import make_model_function
         from .parameter_info import model_parameter_info, fit_coordinates, COORDINATE_FIELDS
         from .profiling import make_profile_scan_function
@@ -70,7 +69,9 @@ class MultiDimProfiler(ProfileCompiler):
         for count, group in representatives.items():
             coordinates = self._coordinate_template({n: float(self.info.arrays['initial'][self.names.index(n)])
                                                       for n in group})
-            up = .5*float(chdtri(1, .32)) if not count else .5
+            # Native cached-NLL minimization recreates RooMinimizer and
+            # resets the requested global delta68 error definition to 0.5.
+            up = .5
             options = dict(max_iterations=max_iterations, stopping_criterion='edm',
                            edm_tolerance=.002*.1*up,
                            edm_validation=global_edm_validation if not count else edm_validation,

@@ -45,10 +45,11 @@ def prepare_expected_workspace(path, card, directory, *, poi=None, run='blind',
         combine_version='11.0.0', root_version='6.40.00', signal_strength=0.,template_convention=template_convention)
     with open_workspace(path) as workspace:
         mc = workspace.obj('ModelConfig')
-        from ..graph import walk
+        from ..graph import names, walk
         from .contracts import require_continuous_model
         require_continuous_model({'provenance': {'discrete_choices': {
-            name: {} for name, node in walk(mc.GetPdf()).items() if node.ClassName() == 'RooMultiPdf'}}})
+            name: {} for name, node in walk(mc.GetPdf(), observables=names(mc.GetObservables())).items()
+            if node.ClassName() == 'RooMultiPdf'}}})
         pois = list(mc.GetParametersOfInterest())
         if len(pois) != 1:
             raise ValueError('First AsymptoticLimits implementation requires exactly one POI')

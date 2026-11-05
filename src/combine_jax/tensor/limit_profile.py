@@ -28,7 +28,6 @@ class LimitProfiler(ProfileCompiler):
         from .model import make_model_function
         from .parameter_info import model_parameter_info, fit_coordinates, COORDINATE_FIELDS
         from .profiling import make_profile_scan_function
-        from ..methods.asymptotic import expected_nll_crossing
 
         if not jax.config.x64_enabled:
             raise ValueError('Expected limits require JAX float64')
@@ -99,11 +98,14 @@ class LimitProfiler(ProfileCompiler):
         self._global_indices = None
         self._global_value = None
         self.poi = poi
-        # Native expected-limit global minimization uses Up equal to the median
-        # NLL crossing, whereas conditional profiles retain Up=0.5.
-        up_global = expected_nll_crossing(.5, confidence_level) if global_up is None else float(global_up)
+        # AsymptoticLimits requests the median-crossing Up, but native
+        # CascadeMinimizer::improve recreates RooMinimizer for CachingSimNLL
+        # and resets Up to its default 0.5, even without bin-stat parameters.
+        # Match that measured effective setting, independently of the CL.
+        up_global = .5 if global_up is None else float(global_up)
         if not np.isfinite(up_global) or up_global <= 0:
             raise ValueError('Global error definition must be positive and finite')
+        self.fit_error_definitions = dict(global_fit=up_global, conditional=.5)
         for name, up in [('global', up_global), ('conditional', .5)]:
             if name not in compile_kinds:
                 continue

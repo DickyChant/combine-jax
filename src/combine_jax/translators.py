@@ -118,7 +118,7 @@ def extract_add(root):
     return pdfs + coefs, {"pdfs": pdfs, "coefs": coefs, "extended": len(coefs) == len(pdfs)}
 
 
-def add_density(node, context, axes):
+def add_coefficients(node, context, axes=()):
     if any(context.depends_on(coef, axis) for coef in node.attrs["coefs"] for axis in axes):
         raise UnsupportedModelError(f"{node.name}: observable-dependent mixture coefficients")
     coefs = context.values(node.attrs["coefs"])
@@ -127,8 +127,45 @@ def add_density(node, context, axes):
         coefs = [c / total for c in coefs]
     else:
         coefs.append(1 - sum(coefs))
+    return coefs
+
+
+def add_value(node, context):
+    # SimpleProdPdf evaluates its children with a null normalization set.
+    # For a fresh RooAddPdf without a coefficient reference set this is the
+    # weighted sum of raw child values, not the mixture of child densities.
+    check_add_context(node, context, 'raw')
+    return sum(c * context.value(pdf) for c, pdf in
+               zip(add_coefficients(node, context), node.attrs['pdfs'], strict=True))
+
+
+def add_integral(node, context, axes):
+    check_add_context(node, context, 'raw')
+    result = 0.
+    for coefficient, pdf in zip(add_coefficients(node, context, axes), node.attrs['pdfs'], strict=True):
+        dependent = tuple(axis for axis in axes if context.depends_on(pdf, axis))
+        # RooAddPdf's supplemental normalization cancels dimensions absent
+        # from a component. Preserve its advertised raw integral, including
+        # this distinction from integrating an ordinary sum of functions.
+        result += coefficient * context.integral(pdf, dependent)
+    return result
+
+
+def add_density(node, context, axes):
+    check_add_context(node, context, 'density' if axes else 'raw')
+    coefs = add_coefficients(node, context, axes)
     return sum(c * context.density(pdf, axes)
                for c, pdf in zip(coefs, node.attrs["pdfs"], strict=True))
+
+
+def check_add_context(node, context, mode):
+    # ROOT's null-nset getter reuses its last explicit normalization set.
+    # Mixed usage is history-dependent: reject it until a native cache-context
+    # export resolves the ambiguity, rather than assume the raw convention.
+    key = ('add_context', node.name)
+    previous = context.cache.setdefault(key, mode)
+    if previous != mode:
+        raise UnsupportedModelError(f'{node.name}: mixed raw/normalized RooAddPdf contexts require native cache resolution')
 
 
 def unsupported_raw(node, context):
@@ -156,16 +193,22 @@ def real_sum_integral(node, context, axes):
                for f, c in zip(node.attrs["functions"], node.attrs["coefs"], strict=True))
 
 
-def default_registry(*, template_convention='native', profile_multipdf=False):
+def default_registry(*, template_convention='native', profile_multipdf=False, cbshape_convention='native'):
+    from .chebyshev import extract_chebyshev, chebyshev_value, chebyshev_integral
+    from .optimized_scalars import (HGG_CLASSES, extract_hgg, hgg_value,
+                                    extract_cheap_product, cheap_product_value)
     from functools import partial
     from .template_conventions import check_convention
     check_convention(template_convention)
     from .discrete import extract_category, extract_multipdf
     from .parametric_templates import (extract_step, step_value, step_integral,
+                                       extract_parametric_1d, parametric_1d_value, parametric_1d_integral,
                                        extract_parametric_2d, parametric_2d_value, parametric_2d_integral)
     from .resonance import (extract_doublecb, doublecb_value, doublecb_integral,
+                            extract_doublecb_fast, doublecb_fast_value, doublecb_fast_integral,
                             extract_erfexp, erfexp_value, erfexp_integral)
-    from .products import extract_pdf_product, pdf_product_value, pdf_product_integral, pdf_product_density
+    from .products import (extract_pdf_product, pdf_product_value, pdf_product_integral, pdf_product_density,
+                           extract_simple_product, simple_product_integral)
     from .bernstein_fast import extract_fast_bernstein, fast_bernstein_value, fast_bernstein_integral
     from .splines import extract_spline, spline_value, spline_integral
     from .analytic import (extract_exponential, exponential_value, exponential_integral,
@@ -180,6 +223,12 @@ def default_registry(*, template_convention='native', profile_multipdf=False):
     from .bin_statistics import extract_error_propagator, error_value, error_integral
     from .constraints import extract_poisson, poisson_log_value, poisson_integral, fast_poisson_log_value
     from .histograms import extract_histfunc, hist_value, hist_integral
+    from .hist_sum import extract_hist_sum, sum_value, sum_integral
+    from .hmumu import extract_twoexp, twoexp_value, twoexp_integral, extract_modz, modz_value, modz_integral
+    from .cbshape import extract_cbshape, cbshape_value, cbshape_integral, check_convention as check_cbshape
+    from .landau import extract_landau, landau_value, landau_integral
+    from .generic_pdf import extract_generic, generic_value, generic_integral
+    check_cbshape(cbshape_convention)
     extract_fast_vertical = partial(extract_fast_vertical, template_convention=template_convention)
     extract_multidimensional = partial(extract_multidimensional, template_convention=template_convention)
     registry = Registry()
@@ -192,6 +241,9 @@ def default_registry(*, template_convention='native', profile_multipdf=False):
     registry.register("AsymPow", lambda r: (ordered((r.kappaLow(), r.kappaHigh(), r.theta())), {}), asympow)
     registry.register("ProcessNormalization", extract_normalization, normalization)
     registry.register("RooProduct", extract_product, product)
+    registry.register("RooCheapProduct", extract_cheap_product, cheap_product_value)
+    for cls in HGG_CLASSES:
+        registry.register(cls, extract_hgg, hgg_value)
     registry.register("RooRecursiveFraction", extract_recursive_fraction,
                       lambda n,c: c.value(n.inputs[0])*math.prod(1-c.value(i) for i in n.inputs[1:]))
     registry.register("RooFormulaVar", extract_formula, formula_value)
@@ -208,19 +260,29 @@ def default_registry(*, template_convention='native', profile_multipdf=False):
     registry.register("RooUniform", servers, lambda n, c: jnp.asarray(1.), integral=uniform_integral)
     registry.register("RooExponential", extract_exponential, exponential_value, integral=exponential_integral)
     registry.register("RooBernstein", extract_bernstein, bernstein_value, integral=bernstein_integral)
+    registry.register("RooChebychev", extract_chebyshev, chebyshev_value, integral=chebyshev_integral)
+    registry.register("RooSumTwoExpPdf", extract_twoexp, twoexp_value, integral=twoexp_integral)
+    registry.register("RooCBShape", partial(extract_cbshape,convention=cbshape_convention), cbshape_value, integral=cbshape_integral)
+    registry.register("RooLandau", extract_landau, landau_value, integral=landau_integral)
+    registry.register("RooGenericPdf", extract_generic, generic_value, integral=generic_integral)
+    registry.register("RooModZPdf", extract_modz, modz_value, integral=modz_integral)
     registry.register("RooPower", extract_power, power_value, integral=power_integral)
     registry.register("RooParametricStepFunction", extract_step, step_value, integral=step_integral)
     registry.register("RooParametricHist2D", extract_parametric_2d, parametric_2d_value, integral=parametric_2d_integral)
+    registry.register("RooParametricHist", extract_parametric_1d, parametric_1d_value, integral=parametric_1d_integral)
     registry.register("RooDoubleCB", extract_doublecb, doublecb_value, integral=doublecb_integral)
+    registry.register("RooDoubleCBFast", extract_doublecb_fast, doublecb_fast_value, integral=doublecb_fast_integral)
     registry.register("RooErfExpPdf", extract_erfexp, erfexp_value, integral=erfexp_integral)
     for degree in range(1, 8):
         registry.register(f"RooBernsteinFast<{degree}>", extract_fast_bernstein, fast_bernstein_value,
                           integral=fast_bernstein_integral)
     registry.register("RooHistPdf", extract_hist_pdf, hist_pdf_value, integral=hist_pdf_integral)
-    registry.register("RooAddPdf", extract_add, unsupported_raw, density=add_density)
+    registry.register("RooAddPdf", extract_add, add_value, integral=add_integral, density=add_density)
     registry.register("RooProdPdf", extract_pdf_product, pdf_product_value,
                       integral=pdf_product_integral, density=pdf_product_density)
+    registry.register("SimpleProdPdf", extract_simple_product, pdf_product_value, integral=simple_product_integral)
     registry.register("CMSHistFunc", extract_histfunc, hist_value, integral=hist_integral)
+    registry.register("CMSHistSum", extract_hist_sum, sum_value, integral=sum_integral)
     registry.register("CMSHistErrorPropagator", extract_error_propagator, error_value, integral=error_integral)
     registry.register("RooRealSumPdf", extract_real_sum, real_sum_value, integral=real_sum_integral)
     registry.register("VerticalInterpPdf", extract_vertical, vertical_value, integral=vertical_integral)

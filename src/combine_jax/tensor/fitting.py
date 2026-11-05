@@ -28,11 +28,11 @@ def physical_parameters(z, coordinates):
     return c['reference'].at[c['free_indices']].set(corrected, unique_indices=True)
 
 
-def make_fit_function(function, *, covariance=True, column_batch_size=4,
+def make_fit_function(function, *, covariance=True, return_matrices=True, column_batch_size=4,
                       curvature_linearization='reuse',
                       max_iterations=1000, max_linesearch=40, gradient_tolerance=1e-6,armijo_roundoff_multiplier=8.,
                       stopping_criterion='projected_gradient', edm_tolerance=1e-4, max_edm_refinements=3,
-                      edm_validation='exact_hessian'):
+                      edm_validation='exact_hessian', inverse_update_block_size=0):
     """Return ``fit(coordinates, model_arrays)`` for one outer JIT compilation.
 
     Coordinates are numeric runtime fields produced by ``fit_coordinates``:
@@ -55,6 +55,12 @@ def make_fit_function(function, *, covariance=True, column_batch_size=4,
     With ``covariance=False`` and estimated EDM, fitting uses only values and
     gradients. No final Hessian is evaluated; covariance/error fields remain
     explicitly unavailable. Separate HVP uncertainty calculations can follow.
+    ``return_matrices=False`` omits the Hessian and covariance from the result,
+    allowing XLA to eliminate quadratic-size unavailable-matrix placeholders.
+    It changes neither minimization nor any requested curvature calculation;
+    vector errors, convergence and curvature-status fields remain available.
+    Optional ``inverse_update_block_size`` streams dense BFGS update temporaries;
+    zero retains the original implementation and no convergence setting changes.
     ``errors`` and ``curvature_errors`` are covariance diagonal square roots;
     ``reported_errors`` separately applies Minuit's bounded finite-step convention.
     ``curvature_linearization='recompute'`` rematerializes gradient intermediates
@@ -64,6 +70,7 @@ def make_fit_function(function, *, covariance=True, column_batch_size=4,
     import jax
     import jax.numpy as jnp
     if type(covariance) is not bool:raise ValueError('covariance must be boolean')
+    if type(return_matrices) is not bool:raise ValueError('return_matrices must be boolean')
     if type(max_edm_refinements) is not int or max_edm_refinements<0:
         raise ValueError('max_edm_refinements must be a nonnegative integer')
     if edm_validation not in ('exact_hessian','estimated'):
@@ -72,7 +79,8 @@ def make_fit_function(function, *, covariance=True, column_batch_size=4,
     def objective(z, data):return function(physical_parameters(z,data['coordinates']),data['model'])
     optimize=make_bfgs(objective,max_iterations=max_iterations,max_linesearch=max_linesearch,
         gradient_tolerance=gradient_tolerance,armijo_roundoff_multiplier=armijo_roundoff_multiplier,
-        stopping_criterion=stopping_criterion,edm_tolerance=edm_tolerance)
+        stopping_criterion=stopping_criterion,edm_tolerance=edm_tolerance,
+        inverse_update_block_size=inverse_update_block_size)
     curvature=make_value_gradient_hessian(objective,column_batch_size=column_batch_size,
         linearization=curvature_linearization)
 
@@ -176,7 +184,7 @@ def make_fit_function(function, *, covariance=True, column_batch_size=4,
         full_status=jnp.ones(total,dtype=status.dtype).at[c['free_indices']].set(status,unique_indices=True)
         result['reported_errors']=jnp.where(result['valid_covariance'],full_reported,jnp.nan)
         result['reported_error_status']=jnp.where(result['valid_covariance'],full_status,3)
-        return result
+        return result if return_matrices else {k:v for k,v in result.items() if k not in ('hessian','covariance')}
     return fit
 
 

@@ -10,6 +10,53 @@ does not claim that it is implemented or equivalent.
 
 ## Statistical method layer
 
+### HIG-23-006 native settings
+
+For the supplied HIG snapshot and README fit/scan commands, native v10 is the
+reference, with `toys/toy_asimov`, `MultiDimFit`, MH=125.38 and the exact stated
+parameter ranges/freezes. The README sets `MINIMIZER_skipDiscreteIterations`: in
+the audited native v10 `CascadeMinimizer::minimize`, this sets `doMultipleMini`
+false and selects continuous `improve` instead of either discrete-scan branch.
+Therefore the HIG baseline comparison must retain the snapshot category choices
+and freeze disassociated alternative parameters, as native does. Importing every
+alternative for coverage does not imply running the default discrete-envelope
+fit. Implementation and full-model agreement remain pending; source evidence is
+in `reports/hig23006_native_discrete_policy.json`.
+
+The separately authorized discrete comparison removes only that runtime define.
+The native `multiMin_hideConstants`, `multiMin_maskConstraints` and
+`multiMin_maskChannels=2` options optimize candidate fits; their masks are
+restored afterwards and do not disable the discrete loop. The default short
+combination algorithm iterates orthogonal category changes followed by a full
+continuous refit, at most 15 iterations per minimization, with native discrete
+NLL tolerance 0.001. Keep that algorithm rather than enabling exhaustive
+`cminRunAllDiscreteCombinations`. Registered category constants and the literal
+`all` attribute freeze are checked before running.
+
+The driver records all 72 category branches using `--saveSpecifiedIndex` and
+verbosity 3. Conditional grid fits pass `verbose-1`, so stdout cannot count all
+iterations at the allowed verbosity. A separately built tracing library forwards
+`minimize` and `iterativeMinimize` unchanged to the installed v10 library via
+`RTLD_NEXT`, recording only entry/exit category indices and timestamps. It never
+evaluates the likelihood or changes its state; the installed stack remains
+read-only. Prechecks compare traced and untraced synthetic results before use.
+Iteration index changes mean accepted entry-to-exit category differences, not
+temporary switches to trial models. Generated Asimov output branches provide
+the final per-point choices; the input limit tree is never read. JAX discrete
+validation follows the fixed-choice full-workspace gates.
+
+HZZ also contains RooAddPdf as a raw SimpleProdPdf factor. Without a reference
+normalization set, a fresh mixture uses raw child values and native raw child
+integrals, with yield coefficients normalized by their sum or the final fraction
+supplied implicitly. Native supplemental normalization removes axes absent
+from a component; adding their integration volumes would change Combine's
+result. Four synthetic native-v10 fixtures validate these paths. ROOT's
+[RooAddPdf normalization cache](https://root.cern.ch/doc/v630/RooAddPdf_8cxx_source.html)
+can reuse a previous explicit norm set on a subsequent null-set call. A model
+using the same mixture both raw and normalized is therefore rejected until its
+native cache context can be resolved, rather than assigned a stateless value.
+Actual HIG and full-workspace agreement remain separate pending gates.
+
 ### End-to-end blinded runtime and DHI integration
 
 `combine-jax limits` is the deployable, pre-fit expected-only entrypoint. The
@@ -251,8 +298,12 @@ neither the likelihood, numerical tolerances, nuisance bounds nor old backend.
 
 `LimitProfiler` reuses the existing device profile driver, compiling global and
 conditional fits plus a first unprofiled evaluation once. Conditional fits use raw
-EDM < 1e-4 (tolerance 0.1, Up=0.5); the native expected global minimum instead uses
-Up equal to the median NLL crossing, so its raw threshold is `0.002*0.1*Up`.
+EDM < 1e-4 (tolerance 0.1, Up=0.5), as does the global fit. AsymptoticLimits
+requests Up equal to the median NLL crossing, but for CachingSimNLL the native
+`CascadeMinimizer::improve` recreates RooMinimizer and resets Up to **0.5**.
+The effective raw threshold is therefore **0.002*0.1*0.5 = 1e-4**,
+independently of the confidence level. The installed v10/ROOT 6.30.07 stack
+was probed directly with requested Up=0.494473 and 1.920729; both reset to 0.5.
 An unchanged 8 GiB static guard checks each executable. Nuisance vectors and fit
 iterations remain on device; scalar crossing control is Python and receives fit
 status/NLL/counts, not per-row likelihood contributions. No full Hessian is needed.
@@ -334,7 +385,14 @@ evidence for constraint consumers; the new template operator computes profiles.
 
 Aligned CMSHistFunc sums and CMSHistErrorPropagator channels pack into histogram,
 process, bin and observation axes. Morph batches group by additive/log mode, with
-neutral padding and shared histogram gathers. Import folds fixed morph terms and
+shared histogram gathers. New artifacts store active histogram/nuisance/source-bin
+entries as float64 sum/difference vectors with integer parameter and destination
+maps; zero coefficients remain present. A segment reduction accumulates these
+entries without a globally padded nuisance axis. This changes storage and reduction
+layout, not the morph formula, normalization, floor or projection. NumPy, JAX and
+PyTorch consume the same neutral arrays; older dense artifacts remain readable.
+Source-bin projections and tails keep their original float64 values.
+Import folds fixed morph terms and
 fully fixed histograms, and encodes native rebinning as a width-weighted projection.
 The runtime retains active-bin normalization, stored tails and morph floors.
 All type-0 through type-4 bin corrections operate on tensors. The stable quadratic
@@ -458,8 +516,22 @@ attributes. Retain original class and node names in diagnostics. Reject cycles,
 ambiguous names, unsupported classes and unsupported configurations explicitly.
 No fallback to numeric sampling or nominal values for unknown floating nodes.
 
+Distinct C++ objects may share a graph key only when they are explicitly
+declared data observables, are exact `RooRealVar` instances, and have identical
+constant flags and static geometry for every default/named range and binning.
+Their values come from the same dataset column, not from their current ROOT
+coordinate. Parameterized ranges, conflicting geometry, duplicate parameters
+and duplicate functions remain errors. This supports the 944 independently
+owned `CMS_th1x` coordinates in HIG-23-006, whose identical ranges/bins and
+CMSHistSum parents were audited in both v10 and the importer stack. Traversal
+checks identity once across all supplied roots; it does not merge arbitrary
+same-named nodes.
+
 An exact-class registry owns extraction, JAX value evaluation and analytic
-normalisation integrals. Inheritance alone is not evidence of equivalent semantics.
+normalisation integrals. Where ROOT exposes semantic argument accessors, extraction
+reads those members rather than inferring argument roles from proxy-list labels.
+Legacy serialized labels can differ from constructor labels; this changes no
+PDF formula or normalization convention. Inheritance alone is not evidence of equivalent semantics.
 Composite nodes specify their child normalisation sets; overlapping or conditional
 products require explicit treatment. Histograms preserve bin edges, cache storage
 order, interpolation, floors and width-weighted normalisation. Formulas use a small
@@ -511,12 +583,36 @@ them in both channel and constraint contexts, and remove them from the continuou
 parameter vector. AD through the solution includes its full curvature; tests compare
 the resulting Hessian to the Schur complement of the explicit-nuisance Hessian.
 Frozen bin nuisances retain their saved values. Nonstandard constraints and shared
-profile nuisances are rejected. Out-of-range solutions are invalid (NaN in the JAX
-function), matching the valid domain of ROOT 6.40's throwing setVal rather than
-silently imposing a clipped minimum.
+profile nuisances are rejected. The default `profile_bounds_policy="reject"`
+keeps out-of-range solutions invalid (NaN), matching ROOT 6.40's throwing setVal.
+The explicit `"clip"` option reproduces ROOT 6.30's bounded assignment, for both
+the old oracle and tensor importer. It is recorded in model provenance and the
+framework-neutral optional `profile_clip` boolean vector; older bundles without
+that vector retain rejection. HIG's native-v10 importer selects clipping explicitly.
+ROOT's global clipping switch is never changed during production import. The
+clipped value is used in both channel and constraint terms, with AD through the
+piecewise solution; no smooth replacement or changed bounds are introduced.
+Tests cover both clipping boundaries, NLL/gradient/Hessian, serialization and the
+unchanged default. A separate native-v10 synthetic Asimov fixture uses the same
+cache/runtime flags as the full reference; raw NLL error is 4e-15 and finite-
+difference gradient error 2.97e-11. This does not certify the full HIG gate.
 Zero total error for a profiled bin is also invalid: Combine leaves its previous
 nuisance value unchanged in that case, so a stateless function cannot reproduce
 arbitrary evaluation histories. The explicit-nuisance mode remains well defined.
+
+Native-default exponential cache routing is also explicit. With
+`ADDNLL_GAUSSNLL=1`, Combine's `VectorizedExponential` uses the sole leaf returned
+by `getParameters`, even if the actual slope is a formula such as `-p*p`.
+Direct cached routes therefore receive immutable graph aliases with that leaf
+as the slope. `ADDNLL_RECURSIVE` follows nested RooAddPdf mixtures; generic PDF
+products and MultiPdf alternatives retain their original scalar RooFit formula.
+The same original PDF can be used in both contexts without sharing the alias.
+Multiple leaf parameters (including constant RooRealVars) select generic
+evaluation. The importer records every changed route in `native_cache_routes`;
+multi-observable optimized bindings are rejected until validated. These are
+Combine evaluator conventions, not a replacement for the standalone RooFit
+converter. Native v10 synthetic evidence and regression tests cover NLLs and
+derivatives; full HIG agreement still requires its unchanged gates.
 
 Ordinary RooGaussian and RooPoisson constraints are normalised over their relevant
 ModelConfig nuisance variables. SimpleGaussianConstraint and SimplePoissonConstraint
@@ -549,8 +645,39 @@ with ROOT 6.40. Only fixed RooHistPdf components are currently accepted there.
 RooHistPdf exports its stored grid and direct observable mapping. Its bin edges
 use the opposite interior-edge convention from FastHisto; the uppermost edge stays
 in the last bin. Negative values are clamped in point evaluation while the full
-analytic integral retains the signed weights, as in ROOT. Unsupported histogram
-interpolation and partial integral modes fail explicitly.
+analytic integral retains the signed weights, as in ROOT. Partial integrals
+sum density times the selected axes' bin widths and look up the remaining
+coordinates. These lookups retain signed bins and clamp out-of-grid coordinates,
+unlike point evaluation. Both backends share this framework-neutral reduction;
+the tensor importer folds fixed slices before JAX. Interpolation, CDF/unit-norm
+modes and restricted integration ranges remain explicitly unsupported.
+
+The actual HZZ conditional SimpleProdPdf and its enclosing VerticalInterpPdf
+now pass native-v10 shape checks. RooRealIntegral suppresses dirty propagation
+from integrated coordinates, even when a factorized SimpleProdPdf child retains
+a conditional histogram slice along one of those coordinates. For full
+VerticalInterpPdf normalization, both backends therefore use the first evaluated
+row's slice. Partial integrals with remaining observable coordinates keep their
+row dependence. This preserves the native cache convention; it does not replace
+the conditional slice integral by one or average it over bins.
+
+For an extended RooAddPdf channel, native CachingSimNLL::splitWithWeights removes
+zero-weight rows before constructing its CachingAddNLL. The normalization anchor
+is therefore the first positive row, independent of whether the tensor importer
+compacts its input. The oracle uses the same row. Full normalizations lower to
+one-row tensor queries broadcast to the event rows; no per-row normalizer tensor
+is needed. Generic synthetic checks include reversed rows, an initial zero row,
+both compaction modes and NLL/gradient/Hessian comparisons. The actual HZZ shape
+comparison passes at 26 native-v10 points; full-workspace gates remain pending.
+
+After folding and packing, the importer removes density-arena slots that no
+runtime instruction reads or writes. The monotonic index remap preserves every
+value, instruction, padding access and discrete alternative; it changes storage
+only. This framework-neutral transform runs by default before model composition.
+`compact_density_storage=False` retains the original layout for regression
+comparisons. It does not lower precision, discard small entries or change the
+likelihood graph. Full HIG CPU/GPU numerical and compiler-memory measurements
+are recorded separately from import-time resource measurements.
 
 Multidimensional fast morphers export their stored geometry through ROOT's own
 dictionary serialization with 17-digit doubles, preserving private axis edges and
@@ -587,9 +714,25 @@ sets must be disjoint and the conditional dependency graph acyclic. Factors with
 no requested normalisation axes disappear, matching ROOT's constraint cancellation.
 An empty effective specification instead reverts to ordinary normalisation; in
 particular a cset that excludes every requested axis can require a joint integral.
-Overlapping/cyclic cases and nonstandard cutoff/default/reference-range modes are
-rejected. Raw values multiply raw child values; raw integrals currently require
-disjoint dependencies on integrated axes. Tests compare the installed ROOT 6.40
+General overlapping/cyclic cases and nonstandard cutoff/default/reference-range
+modes are rejected. Certified same-axis exceptions are ModZ or TwoExp times
+Chebychev, and a fixed identity-wrapped RooSpline1D times Chebychev and/or
+RooBernsteinFast polynomials, including ordinary nested products. These retain
+the native default RooIntegrator1D refinement and stopping rule. The numerical
+shapes use streamed integration with AD; fixed spline/polynomial basis functions
+are folded at import into every native refinement level. Polynomial coefficient
+products and the adaptive choice remain dynamic, so no sampled surrogate or
+fixed quadrature replaces the native procedure. Both transports are plain
+metadata plus float64 arrays, independently evaluable with NumPy.
+
+Raw values multiply raw child values. General raw integrals require disjoint
+dependencies; the certified joint products preserve RooProdPdf's advertised
+product of component integrals even though its density uses a joint denominator.
+Nested self-normalized RooProdPdf factors contribute one to that advertised raw
+integral. Custom integration policies and axis-dependent coefficients remain
+explicitly unsupported. Native-v10 checks cover all 15 exported Hmumu shapes at
+nominal plus 25 random points; synthetic cached-channel tests additionally check
+tensor gradients, Hessians and streamed HVPs. Tests compare the installed ROOT 6.40
 behavior, including nested products and mixtures. ROOT's
 [factorization source](https://root.cern/doc/master/RooProdPdf_8cxx_source.html)
 provides additional context; the installed-stack tests define the certified scope.
@@ -997,6 +1140,29 @@ skip curvature and report the exact-Hessian EDM as unavailable; their status doe
 not certify curvature at a clipping surface. These diagnostics distinguish the
 accepted EDM rule from the separate strict-gradient criterion.
 Failed points remain failures and cannot silently participate in an envelope.
+For standalone fit results, `make_fit_function(return_matrices=False)` (benchmark
+`--fit-matrix-output none`) also omits the Hessian and covariance output arrays.
+This does not change requested curvature calculations, vector errors or fit
+status. In gradient-only mode it lets XLA remove the dense NaN placeholders for
+unrequested matrices. The default output schema remains unchanged. HIG fit
+compilation diagnostics explicitly reject execution until its native gates pass.
+`make_fit_function(inverse_update_block_size=128)` (benchmark option
+`--fit-inverse-update-block-size 128`) is an opt-in memory path for
+the same dense BFGS search metric. Bound masks and identity resets are applied
+inside row blocks; the rank-two update reads both old matrix orientations and
+retains the original symmetrization. L1 uncertainty and finiteness checks reduce
+over blocks, so only the old/new dense matrices and small row intermediates are
+needed. The final overlapping block is excluded from duplicate reductions.
+Every element of the next matrix is overwritten; its arbitrary initial fill
+depends on the newly evaluated gradient to prevent XLA from allocating it
+before the gradient working set is released. NaN and large sentinel fills are
+checked to have no effect on the resulting matrix.
+The objective, float64 precision, secant safeguards, line search, EDM threshold
+and covariance rules are unchanged. Reduction association can change rounding;
+this is not limited-memory BFGS. Zero (default) retains the original code path.
+Generic native-card fits and analytic bound/EDM tests cover both paths; full-HIG
+compilation, execution, and fit agreement must be measured separately before
+claiming a full-model memory or speed improvement.
 Discrete branches are distinct frozen models; the generic common-grid validation
 includes the native correction and a change of preferred branch. Grid validation
 does not establish confidence endpoints or the HHVV nuisance scan.
@@ -1203,7 +1369,10 @@ global observables, and records the initial offset NLL without fitting data.
 offsets when recording `nll0`; DHI supplies this flag by default. The CLI keeps
 native default offsets unless explicitly requested. This changes the reported
 constant only, not the JAX objective, profiles or gradients. Other unimplemented
-runtime definitions are rejected.
+runtime definitions are rejected. The DHI JAX adapters also reject nondefault native
+minimizer configurations; the device solver does not implement Minuit algorithm,
+strategy or fallback overrides. The supported default comparison configuration
+is `0,0.1:0,0.2:0,0.4`, including equivalent explicit Minuit2/Migrad spelling.
 The isolated importer applies FitterAlgoBase's `OPTIMIZE_BOUNDS` policy before
 lowering the model. MultiDimFit does not inherit the limit method's nonnegative
 POI range or its 1%-of-rMax starting point. Snapshot and observed execution are
@@ -1226,11 +1395,18 @@ best-fit row followed by grid rows; `deltaNLL` and parameter branches are float3
 Impacts use profile intervals followed by independent conditional POI fits at
 both endpoints. These are not Hessian error variations. Native v10
 `CascadeMinimizer::minos` rebuilds RooMinimizer for CachingSimNLL and resets its
-error definition to **0.5**; native `--robustFit 1` instead uses
+error definition to **0.5** and its internal tolerance to **1.0**, even when
+the preceding Migrad was configured with tolerance 0.1 or 0.01. The strategy
+is retained. This reset was measured in the installed v10/ROOT 6.30.07 stack;
+tightening the cmin tolerance alone does not tighten Minos's internal profile
+minimizations. Native `--robustFit 1` instead uses
 `0.5*chi2_isf(0.32,1) = 0.494473240739`. The former matters even without bin-stat
 parameters. The JAX crossing controller currently uses Brent bracketing, not a
 port of Minos or native robustFit's stepping path. It records the target,
-crossing residual and explicit bound truncation. Native singles/impact rows
+crossing residual and explicit bound truncation. Its profile fits retain the
+1e-4 raw EDM criterion, so small native Minos endpoint differences remain an
+explicit validation issue; they are not corrected by tuning the CL threshold.
+Native singles/impact rows
 leave `deltaNLL=0`; their actual conditional NLLs remain in the JSON receipt.
 
 The default experimental MultiDimFit CLI validates EDM with exact final AD
@@ -1261,3 +1437,41 @@ stay on device; only scalar diagnostics are read by the crossing controller.
 The global denominator, crossing formulae and stopping tolerances are unchanged.
 This detects a dominated local basin; it does not guarantee a global minimum
 when the alternate seed itself has a higher unprofiled NLL.
+
+## Explicit dataset selection and scoped observed authorization
+
+`combine_jax.datasets.dataset_selection(dataset, analysis=..., kind=...)` is a
+ROOT-independent policy shared by private native drivers and numerical entry
+points. Reports retain the requested name, observed/Asimov kind and analysis.
+`data_obs` cannot be relabelled Asimov. SQ authorizes observed HIG-23-006 only;
+HHVV (also detected by `r_hhvv`) and explicitly blind analyses reject observed
+selection. Synthetic fixtures may exercise both kinds. This is a permission
+check, not numerical validation or proof that an arbitrary renamed dataset is
+Asimov; existing identity/generation checks remain necessary.
+
+The HIG native driver exposes `--dataset toys/toy_asimov|data_obs`, defaulting
+to its original Asimov selection, and binds the input snapshot by checksum.
+Its observed comparison retains the README grid and fixed MultiPdf choices
+(`MINIMIZER_skipDiscreteIterations`); HEPData's 23 combined Fig 1 points map
+exactly to indices 25–47 of the 83-point grid. The accepted native reference is
+v10.3.3, whereas the publication README used `102x-comb2021`. Numerical observed
+NLL/gradient/Hessian fixtures and full observed NLL gates are tracked separately;
+policy tests and synthetic native fit prechecks do not establish those gates.
+
+The neutral tensor importer accepts `data=...`, `analysis=...`,
+`dataset_kind=...` and records the explicit policy beside the canonical dataset
+identity. Numerical benchmarks accept `--dataset`, `--analysis`, and
+`--dataset-kind`; they require the requested name to match the imported model
+and include its identity in every report. HIG import/native/point/gate tools
+retain their Asimov default and require `--dataset data_obs` for the observed
+path. Asimov and observed point proofs are not interchangeable.
+
+Observed data regression coverage includes native-v10 synthetic unweighted
+RooDataSet events, fractional-weight RooDataHist bins, explicit zero bins, and
+a simultaneous mixed binned/unbinned model. Twelve parameter points test NLL,
+first derivatives and the full Hessian. Native CLI cache flags are installed
+before constructing PDFs; a no-flags RooFit evaluation is a different reference.
+The Hessian cross terms use the tensor product of fourth-order derivative
+stencils, retaining order-two and half-step values to expose truncation errors.
+Dataset choice does not change the likelihood formula, its float64 precision,
+or the standard full-workspace NLL tolerance of 1e-6.

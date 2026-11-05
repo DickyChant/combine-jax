@@ -1,11 +1,49 @@
 """Factorised RooProdPdf densities with explicit conditional normalisation sets."""
 
 import math
+from functools import lru_cache
 
 import jax.numpy as jnp
 
 from .graph import UnsupportedModelError
-from .root_io import stored_member
+from .root_io import stored_member, load_root
+from .product_axes import simple_product_axes
+
+
+@lru_cache(maxsize=1)
+def simple_product_access():
+    root = load_root()
+    if not root.gInterpreter.Declare(r'''
+      #include "HiggsAnalysis/CombinedLimit/interface/SimpleProdPdf.h"
+      namespace combine_jax_io {
+      class SimpleProdAccess : public SimpleProdPdf {
+      public:
+        SimpleProdAccess(SimpleProdPdf const& p) : SimpleProdPdf(p, "combine_jax_simpleprod") {}
+        std::vector<int> settings() const { return _pdfSettings; }
+      };
+      }
+    '''):
+        raise RuntimeError('Cannot compile SimpleProdPdf extraction helper')
+    return root.combine_jax_io.SimpleProdAccess
+
+
+def extract_simple_product(root):
+    if root.getForceNumInt() or root.normRange():
+        raise UnsupportedModelError('SimpleProdPdf forced numerical or named-range normalization')
+    inputs = tuple(str(child.GetName()) for child in root.pdfList())
+    settings = tuple(int(v) for v in simple_product_access()(root).settings())
+    if len(inputs) != len(settings):
+        raise UnsupportedModelError('SimpleProdPdf settings/factor count mismatch')
+    # The vector-settings constructor stores the factor indices, not the
+    # passed flags. Read the persisted settings verbatim; only ==1 is special.
+    return inputs, {'settings': settings}
+
+
+def simple_product_integral(node, context, axes):
+    selected = simple_product_axes(node.inputs, node.attrs['settings'], axes, context.depends_on)
+    # This is the class's advertised factorized integral, including overlapping
+    # factors and axes absent from all children; do not substitute a joint integral.
+    return math.prod(context.integral(name, chosen) for name, chosen in zip(node.inputs, selected, strict=True))
 
 
 def extract_pdf_product(root):
@@ -22,7 +60,14 @@ def extract_pdf_product(root):
         if kind not in ("all", "nset", "cset"):
             raise UnsupportedModelError(f"Unknown product normalisation set kind {kind!r}")
         specifications.append((kind, tuple(str(v.GetName()) for v in specified) if specified else ()))
-    return tuple(inputs), {"normalisations": tuple(specifications)}
+    attrs={"normalisations": tuple(specifications)}
+    from .joint_spline_product import extract
+    joint=extract(root,specifications)
+    if joint is not None:attrs['joint_spline_cheby']=joint
+    from .joint_numeric_product import extract as extract_numeric
+    joint=extract_numeric(root,specifications)
+    if joint is not None:attrs['joint_numeric_product']=joint
+    return tuple(inputs), attrs
 
 
 def pdf_product_value(node, context):
@@ -68,6 +113,12 @@ def product_axes(node, context, axes):
 def pdf_product_density(node, context, axes):
     if not axes:
         return pdf_product_value(node, context)
+    if 'joint_spline_cheby' in node.attrs:
+        from .joint_spline_product import density
+        return density(node,context,axes)
+    if 'joint_numeric_product' in node.attrs:
+        from .joint_numeric_product import density
+        return density(node,context,axes)
     normalisations = product_axes(node, context, axes)
     # RooProdPdf omits factors with no requested normalisation observables,
     # including constraints and factors declared conditional on all axes.
@@ -76,6 +127,14 @@ def pdf_product_density(node, context, axes):
 
 
 def pdf_product_integral(node, context, axes):
+    joint=node.attrs.get('joint_spline_cheby') or node.attrs.get('joint_numeric_product')
+    if joint and axes==(joint['axis'],):
+        # RooProdPdf advertises this factorized raw integral. Its normalized
+        # density separately uses the generated joint-product denominator.
+        # Nested self-normalized RooProdPdf factors contribute one here.
+        # The enclosing density still uses the full joint raw-product norm.
+        units=joint.get('unit_integral_factors',())
+        return math.prod(context.integral(name,axes) for name in node.inputs if name not in units)
     used, result = set(), jnp.asarray(1.)
     for name in node.inputs:
         dependent = tuple(a for a in axes if context.depends_on(name, a))

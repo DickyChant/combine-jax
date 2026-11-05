@@ -8,8 +8,9 @@ from combine_jax.tensor.optimize import make_bfgs
 from combine_jax.tensor.fitting import make_fit_function
 
 
+@pytest.mark.parametrize('inverse_block', [0,2])
 @pytest.mark.parametrize('offset', [0., 1.e7])
-def test_edm_coupled_quadratic_matches_exact_gap_and_counts(offset):
+def test_edm_coupled_quadratic_matches_exact_gap_and_counts(offset,inverse_block):
     matrix = jnp.array([[17., 3., 0.], [3., 2., .1], [0., .1, .07]])
     center = jnp.array([.3, -1.7, 2.1])
     def objective(x, a):
@@ -17,7 +18,7 @@ def test_edm_coupled_quadratic_matches_exact_gap_and_counts(offset):
         return a['offset']+.5*d@a['matrix']@d
     args = (jnp.zeros(3), dict(matrix=matrix, center=center, offset=jnp.array(offset)),
             jnp.full(3, -10.), jnp.full(3, 10.))
-    fn = make_bfgs(objective, stopping_criterion='edm', edm_tolerance=1e-4)
+    fn = make_bfgs(objective, stopping_criterion='edm', edm_tolerance=1e-4,inverse_update_block_size=inverse_block)
     result = jax.device_get(jax.jit(fn)(*args))
     assert result['status'] == 0 and 0 <= result['estimated_edm'] < 1e-4
     d = result['x']-center
@@ -61,16 +62,17 @@ def test_invalid_criterion():
         make_bfgs(lambda x, _: jnp.sum(x*x), stopping_criterion='unknown')
 
 
-def test_fit_refines_optimistic_metric_on_conditioned_quadratics():
+@pytest.mark.parametrize('inverse_block', [0,3])
+def test_fit_refines_optimistic_metric_on_conditioned_quadratics(inverse_block):
     def objective(x, a):
         delta=x-a['center']
         return .5*delta@a['matrix']@delta
     coordinates=dict(reference=jnp.zeros(7),free_indices=jnp.arange(7),scale=jnp.ones(7),
                      lower=jnp.full(7,-jnp.inf),upper=jnp.full(7,jnp.inf),
                      physical_lower=jnp.full(7,-jnp.inf),physical_upper=jnp.full(7,jnp.inf))
-    fit=jax.jit(make_fit_function(objective,stopping_criterion='edm'))
-    no_refinement=jax.jit(make_fit_function(objective,stopping_criterion='edm',max_edm_refinements=0))
-    estimated_only=jax.jit(make_fit_function(objective,stopping_criterion='edm',edm_validation='estimated'))
+    fit=jax.jit(make_fit_function(objective,stopping_criterion='edm',inverse_update_block_size=inverse_block))
+    no_refinement=jax.jit(make_fit_function(objective,stopping_criterion='edm',max_edm_refinements=0,inverse_update_block_size=inverse_block))
+    estimated_only=jax.jit(make_fit_function(objective,stopping_criterion='edm',edm_validation='estimated',inverse_update_block_size=inverse_block))
     rng=np.random.default_rng(358)
     refined=0
     for i in range(10):

@@ -149,7 +149,7 @@ def test_shared_dependency_and_same_operation_batching():
     np.testing.assert_allclose(evaluate_numpy(b,[.3])[:120], .3*np.arange(1,121))
 
 
-def test_conditional_constant_branch_short_circuits_and_dynamic_rejects():
+def test_conditional_constant_branch_short_circuits_and_dynamic_selects():
     p = Parameter('x',.2,-5,5,1,'nuisance')
     nodes = {'x':('RooRealVar',(),dict(value=.2)),
       'f':('RooFormulaVar',('x',),dict(ast=('conditional',('constant',1.),
@@ -157,8 +157,9 @@ def test_conditional_constant_branch_short_circuits_and_dynamic_rejects():
     b = import_scalars(nodes,[p],['f'],fixed_value=lambda _:pytest.fail('Unexpected fold'))
     np.testing.assert_array_equal(evaluate_numpy(b,[.2]), [.2])
     nodes['f'][2]['ast'] = ('conditional',('argument',0),('constant',1.),('constant',2.))
-    with pytest.raises(UnsupportedModelError,match='Dynamic conditional'):
-        import_scalars(nodes,[p],['f'],fixed_value=lambda _:0.)
+    b = import_scalars(nodes,[p],['f'],fixed_value=lambda _:0.)
+    np.testing.assert_array_equal(evaluate_numpy(b,[.2]), [1.])
+    np.testing.assert_array_equal(evaluate_numpy(b,[0.]), [2.])
 
 
 def test_fixed_parameter_changes_and_malformed_program_are_rejected():

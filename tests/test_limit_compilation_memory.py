@@ -6,10 +6,29 @@ from combine_jax.tensor.model import from_workspace
 from combine_jax.tensor.limit_profile import LimitProfiler
 
 
+def test_cached_native_nll_uses_effective_up_for_both_method_drivers(counting_path, monkeypatch):
+    """Installed v10 resets requested delta68/median-crossing Up to 0.5."""
+    from combine_jax.tensor import profiling
+    from combine_jax.tensor.multidim_profile import MultiDimProfiler
+    with open_workspace(counting_path) as workspace:
+        model = from_workspace(workspace, 'tests/cards/counting.txt')
+    requested = []
+    original = profiling.make_profile_scan_function
+    def capture(function, **options):
+        requested.append(options['edm_tolerance'])
+        return original(function, **options)
+    monkeypatch.setattr(profiling, 'make_profile_scan_function', capture)
+    for cl in (.9, .95):
+        driver = LimitProfiler(model, 'r', confidence_level=cl, defer_compile=True)
+        assert driver.fit_error_definitions == dict(global_fit=.5, conditional=.5)
+    MultiDimProfiler(model, conditional_parameters=[('r',)], defer_compile=True)
+    assert requested == [1e-4]*6
+
+
 def test_selected_compilations_and_cache_release_preserve_fits(counting_path):
     with open_workspace(counting_path) as workspace:
         model = from_workspace(workspace, 'tests/cards/counting.txt')
-    reference = LimitProfiler(model, 'r', global_up=.5, global_start_fraction=.1)
+    reference = LimitProfiler(model, 'r', global_start_fraction=.1)
     baseline = reference.global_minimum()
     global_point = reference.point()
     profiled = [reference(mu) for mu in (0., .4, 1.)]

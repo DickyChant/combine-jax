@@ -13,13 +13,15 @@ from ..graph import UnsupportedModelError
 from .bundle import TensorBundle
 
 
+HGG_CLASSES = frozenset('CMSHggFormula' + suffix for suffix in ('A1','A2','B1','B2','C1','D1','D2'))
 SCALAR_CLASSES = frozenset(('RooRealVar', 'RooConstVar', 'RooFormulaVar', 'RooProduct',
-    'RooAddition', 'ProcessNormalization', 'AsymPow', 'RooRecursiveFraction', 'RooSpline1D'))
+    'RooAddition', 'ProcessNormalization', 'AsymPow', 'RooRecursiveFraction', 'RooSpline1D',
+    'RooCheapProduct')) | HGG_CLASSES
 UNARY = frozenset(('neg', 'not', 'abs', 'sqrt', 'exp', 'log', 'log10', 'sin', 'cos',
                    'tan', 'tanh', 'erf', 'erfc'))
-BINARY = frozenset(('add', 'sub', 'mul', 'div', 'pow', 'min', 'max', 'lt', 'le',
+BINARY = frozenset(('add', 'sub', 'mul', 'div', 'pow', 'min', 'max', 'min_first', 'max_first', 'lt', 'le',
                     'gt', 'ge', 'eq', 'ne', 'and', 'or'))
-OPERATIONS = UNARY | BINARY | {'sum', 'product', 'asymmetric_log'}
+OPERATIONS = UNARY | BINARY | {'sum', 'product', 'asymmetric_log', 'landau', 'select'}
 
 
 def operation(kind, operands, mask, xp=np, special=None):
@@ -29,6 +31,11 @@ def operation(kind, operands, mask, xp=np, special=None):
     operation kind is static. Padding is neutralized before a reduction.
     """
     a = operands[..., 0]
+    if kind == 'select':
+        return xp.where(a != 0, operands[..., 1], operands[..., 2])
+    if kind == 'landau':
+        from ..landau_math import value
+        return value(a, operands[..., 1], operands[..., 2], xp)
     if kind == 'sum':
         return xp.sum(xp.where(mask, operands, 0.), axis=-1)
     if kind == 'product':
@@ -55,12 +62,35 @@ def operation(kind, operands, mask, xp=np, special=None):
     if kind == 'mul': return a*b
     if kind == 'div': return a/b
     if kind == 'pow': return a**b
+    # Preserve std::min/max's first-argument choice at a tie for optimized
+    # Combine formulas. Ordinary formula min/max retain their existing rules.
+    if kind == 'min_first': return xp.where(b < a, b, a)
+    if kind == 'max_first': return xp.where(a < b, b, a)
     functions = dict(min='minimum', max='maximum', lt='less', le='less_equal',
         gt='greater', ge='greater_equal', eq='equal', ne='not_equal',
         **{'and':'logical_and', 'or':'logical_or'})
     if kind not in functions:
         raise UnsupportedModelError(f'Unknown tensor scalar operation {kind}')
     return getattr(xp, functions[kind])(a, b)
+
+
+def lower_hgg(attrs, read, constant, emit):
+    """Lower optimized formulas to neutral batched arithmetic, not node ops."""
+    fields = [read(name) if name else constant(value)
+              for name, value in zip(attrs['fields'], attrs['literals'], strict=True)]
+    kind = attrs['kind']
+    if kind == 'D':
+        return emit('min_first', [emit('add', fields), constant(1.)])
+    result = constant(1.)
+    if kind == 'A':
+        result = emit('add', [emit('add', [result, fields[2]]), fields[3]])
+    for coefficient, name in zip(attrs['coefficients'], attrs['terms'], strict=True):
+        result = emit('add', [result, emit('mul', [constant(coefficient), read(name)])])
+    if kind == 'A':
+        return emit('mul', [emit('add', fields[:2]), result])
+    if kind == 'B':
+        return emit('mul', [fields[0], emit('max_first', [constant(.01), result])])
+    return result
 
 
 def dependency_flags(nodes, parameters, *, observables=(), profiles=()):
@@ -119,8 +149,18 @@ class _Builder:
     def is_constant(self, slot):
         return self.depths[slot] == 0 and slot not in self.parameter_slots
 
-    def emit(self, kind, inputs):
+    def emit(self, kind, inputs, active=None):
         inputs = tuple(inputs)
+        if active is not None:
+            if self.is_constant(active):
+                if not self.values[active]: return self.constant(0.)
+            else:
+                # Mask operands before potentially undefined arithmetic. A final
+                # select alone leaves NaN cotangents from sqrt/log/div/pow in an
+                # inactive branch. One is a finite interior input for all ops.
+                safe = [self.emit('select', [active, i, self.constant(1.)]) for i in inputs]
+                value = self.emit(kind, safe)
+                return self.emit('select', [active, value, self.constant(0.)])
         if kind not in OPERATIONS:
             raise UnsupportedModelError(f'Unsupported scalar opcode {kind}')
         if not inputs:
@@ -140,30 +180,36 @@ class _Builder:
             self.expressions[key] = slot
         return self.expressions[key]
 
-    def formula(self, tree, arguments):
+    def formula(self, tree, arguments, active=None):
+        if active is not None and self.is_constant(active) and not self.values[active]:
+            return self.constant(0.)
         kind = tree[0]
         if kind == 'constant': return self.constant(tree[1])
         if kind == 'argument': return arguments[tree[1]]
         binary = {'+':'add', '-':'sub', '*':'mul', '/':'div', '**':'pow',
                   '<':'lt', '<=':'le', '>':'gt', '>=':'ge', '==':'eq', '!=':'ne'}
         if kind in ('binary', 'compare'):
-            return self.emit(binary[tree[1]], [self.formula(t, arguments) for t in tree[2:]])
+            return self.emit(binary[tree[1]], [self.formula(t, arguments, active) for t in tree[2:]], active)
         if kind == 'unary':
-            a = self.formula(tree[2], arguments)
-            return a if tree[1] == '+' else self.emit({'-':'neg', 'not':'not'}[tree[1]], [a])
+            a = self.formula(tree[2], arguments, active)
+            return a if tree[1] == '+' else self.emit({'-':'neg', 'not':'not'}[tree[1]], [a], active)
         if kind == 'call':
             op = {'fabs':'abs', 'pow':'pow'}.get(tree[1], tree[1])
-            return self.emit(op, [self.formula(t, arguments) for t in tree[2]])
+            return self.emit(op, [self.formula(t, arguments, active) for t in tree[2]], active)
         if kind == 'boolean':
-            result = self.formula(tree[2][0], arguments)
+            result = self.formula(tree[2][0], arguments, active)
             for term in tree[2][1:]:
-                result = self.emit(tree[1], [result, self.formula(term, arguments)])
+                result = self.emit(tree[1], [result, self.formula(term, arguments, active)], active)
             return result
         if kind == 'conditional':
-            condition = self.formula(tree[1], arguments)
+            condition = self.formula(tree[1], arguments, active)
             if self.is_constant(condition):
-                return self.formula(tree[2] if self.values[condition] else tree[3], arguments)
-            raise UnsupportedModelError('Dynamic conditional scalar formula needs masked branch lowering; eager select would corrupt inactive-branch derivatives')
+                return self.formula(tree[2] if self.values[condition] else tree[3], arguments, active)
+            parent = self.constant(1.) if active is None else active
+            yes = self.emit('and', [parent, condition])
+            no = self.emit('and', [parent, self.emit('not', [condition])])
+            branches = [self.formula(tree[2], arguments, yes), self.formula(tree[3], arguments, no)]
+            return self.emit('select', [condition, *branches], active)
         raise UnsupportedModelError(f'Unsupported scalar formula AST {kind}')
 
     def node(self, name):
@@ -191,6 +237,10 @@ class _Builder:
                 result = self.formula(attrs['ast'], values)
             elif cls in ('RooProduct', 'RooAddition'):
                 result = self.emit('product' if cls == 'RooProduct' else 'sum', values)
+            elif cls == 'RooCheapProduct':
+                result = self.emit('product', [self.constant(attrs['folded_factor']), *values])
+            elif cls in HGG_CLASSES:
+                result = lower_hgg(attrs, self.node, self.constant, self.emit)
             elif cls == 'RooRecursiveFraction':
                 one = self.constant(1.)
                 result = self.emit('product', [values[0], *[self.emit('sub', [one,v]) for v in values[1:]]])
@@ -265,7 +315,7 @@ def import_scalars(nodes, parameters, roots, *, fixed_value, observables=(), pro
         folded_classes=dict(sorted(Counter(nodes[n][0] for n in builder.folded).items())),
         dynamic_instructions=len(builder.instructions), batches=len(schedule),
         maximum_depth=max(builder.depths), provenance=provenance or {},
-        scope='Scalar rates/shape parameters only; does not evaluate channel PDFs or constraints. Fixed-bound entries must retain imported values. Dynamic conditionals and floating splines require subsequent lowering.')
+        scope='Scalar rates/shape parameters only; does not evaluate channel PDFs or constraints. Fixed-bound entries must retain imported values. Conditional branches mask operands before arithmetic. Floating splines require subsequent lowering.')
     return TensorBundle(metadata, arrays)
 
 
@@ -304,7 +354,7 @@ def validate_program(bundle):
         inputs, outputs, mask = index_buffer(batch['inputs']), index_buffer(batch['outputs']), a[batch['mask']]
         if inputs.ndim != 2 or mask.shape != inputs.shape or mask.dtype != bool or outputs.shape != (len(inputs),):
             raise ValueError('Invalid operation batch shape')
-        arity = 1 if op in UNARY else 2 if op in BINARY else 3 if op == 'asymmetric_log' else None
+        arity = 1 if op in UNARY else 2 if op in BINARY else 3 if op in ('asymmetric_log','landau','select') else None
         if (arity is not None and (inputs.shape[1] != arity or not np.all(mask))) or inputs.shape[1] < 1:
             raise ValueError(f'Invalid arity for {op}')
         if len(set(outputs.tolist())) != len(outputs) or set(outputs.tolist()) & (produced | all_outputs):

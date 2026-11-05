@@ -1,4 +1,4 @@
-"""Batched CMSHistFunc channels, statistical shifts and exact analytic bin profiles."""
+"""Batched CMSHistFunc/CMSHistSum channels and exact analytic bin profiles."""
 from collections import defaultdict
 import math
 
@@ -10,26 +10,37 @@ from .scalar import validate_program
 
 
 def smooth_step(theta,region,xp=np):
-    x=theta/region
+    x=theta/xp.where(region>0,region,1.)
     polynomial=x*(x*x*(3*x*x-10)+15)/8
     return xp.where(xp.abs(theta)>=region,xp.where(theta>0,1.,-1.),polynomial)
 
 
-def morph_batch(mode,theta,buffers,xp=np):
-    theta=xp.where(buffers['morph_mask'],theta,0.)
-    alpha=smooth_step(theta,buffers['region'][:,None],xp)
-    delta=.5*theta[:,:,None]*(buffers['diff']+alpha[:,:,None]*buffers['sum'])
-    bins=buffers['base']+xp.sum(delta,axis=1)
+def morph_batch(mode,theta,buffers,xp=np,*,segment_sum=None):
+    if 'entry_morphs' in buffers:
+        if segment_sum is None:
+            if xp is not np:raise ValueError('Sparse morphs require a backend segment reduction')
+            from .template_morphs import numpy_segment_sum
+            segment_sum=numpy_segment_sum
+        alpha=smooth_step(theta,buffers['region'][buffers['morph_histograms']],xp)
+        entries=buffers['entry_morphs']
+        delta=.5*theta[entries]*(buffers['diff']+alpha[entries]*buffers['sum'])
+        shape=buffers['base'].shape
+        bins=buffers['base']+segment_sum(delta,buffers['entry_bins'],shape[0]*shape[1]).reshape(shape)
+    else:
+        theta=xp.where(buffers['morph_mask'],theta,0.)
+        alpha=smooth_step(theta,buffers['region'][:,None],xp)
+        delta=.5*theta[:,:,None]*(buffers['diff']+alpha[:,:,None]*buffers['sum'])
+        bins=buffers['base']+xp.sum(delta,axis=1)
     if mode=='log':
         bins=xp.where(buffers['source_mask'],xp.exp(bins),0.)
         bins=bins*(buffers['nominal_sum']/xp.sum(bins,axis=1))[:,None]
-    elif mode!='linear':
+    elif mode not in ('linear','raw'):
         raise ValueError(f'Unknown CMSHistFunc mode {mode}')
-    bins=xp.where(buffers['source_mask'],xp.maximum(bins,1e-9),0.)
+    bins=xp.where(buffers['source_mask'],bins if mode=='raw' else xp.maximum(bins,1e-9),0.)
     return xp.einsum('hbf,hf->hb',buffers['projection'],bins)+buffers['tail']
 
 
-def profile_solution(mean,error,observed,global_observed,lower,upper,xp=np):
+def profile_solution(mean,error,observed,global_observed,lower,upper,xp=np,*,clip_to_bounds=False):
     safe_error=xp.where(error>0,error,1.)
     mean=xp.where(error>0,mean,0.)
     observed=xp.where(error>0,observed,0.)
@@ -39,6 +50,7 @@ def profile_solution(mean,error,observed,global_observed,lower,upper,xp=np):
     first=-.5*(b+xp.copysign(1.,b)*xp.sqrt(b*b-4*c))
     second=c/xp.where(first!=0,first,1.)
     solution=xp.maximum(first,second)
+    solution=xp.where(clip_to_bounds,xp.clip(solution,lower,upper),solution)
     valid=(error>0)&(solution>=lower)&(solution<=upper)
     return xp.where(valid,solution,xp.nan)
 
@@ -54,11 +66,13 @@ def template_terms(histograms,scalar_values,arrays,xp=np):
     pc,pb=arrays['profile_channels'],arrays['profile_bins']
     profiles=profile_solution(total[pc,pb]*arrays['profile_widths'],
         error[pc,pb]*arrays['profile_widths'],arrays['profile_observed'],arrays['profile_globals'],
-        arrays['profile_minimum'],arrays['profile_maximum'],xp)
+        arrays['profile_minimum'],arrays['profile_maximum'],xp,clip_to_bounds=arrays.get('profile_clip',False))
     combined=xp.concatenate((scalar_values,profiles))
     parameters=combined[arrays['bin_parameter_indices']]
     kinds=arrays['bin_types']
-    poisson=xp.where(kinds==2,coefficients[:,:,None]*values*(parameters-1.),0.)
+    raw=(xp.where(process_mask[:,:,None],histograms[arrays['poisson_histogram_indices']],0.)
+         if 'poisson_histogram_indices' in arrays else values)
+    poisson=xp.where(kinds==2,coefficients[:,:,None]*raw*(parameters-1.),0.)
     gaussian=xp.where(kinds==3,coefficients[:,:,None]*arrays['errors']*parameters,0.)
     shift=xp.sum(poisson+gaussian,axis=1)
     shift=shift+xp.where(kinds[:,0,:]==1,error*parameters[:,0,:],0.)
@@ -83,7 +97,7 @@ def _histogram_record(name,attrs,lookup,dynamic,constant):
     mode={0:'linear',1:'log'}.get(attrs['vertical_type'])
     active=int(attrs.get('source_active',attrs['active']))
     source=np.asarray(attrs['templates'],dtype=np.float64)
-    if mode is None or not math.isfinite(region) or region<=0 or active<=0:
+    if mode is None or not math.isfinite(region) or region<0 or active<=0:
         raise UnsupportedModelError(f'{name}: invalid histogram morph configuration')
     if source.ndim!=2 or source.shape[0]!=1+2*len(attrs['morphs']) or active>source.shape[1]:
         raise UnsupportedModelError(f'{name}: invalid template storage/active range')
@@ -97,13 +111,17 @@ def _histogram_record(name,attrs,lookup,dynamic,constant):
     for i,n in enumerate(attrs['morphs']):
         if n not in lookup:raise UnsupportedModelError(f'{name}: missing scalar morph binding {n}')
         lo,hi=source[2*i+1,:active],source[2*i+2,:active]
-        if mode=='log':
+        if attrs.get('stored_sum_diff',False):
+            summ,diff=lo,hi
+        elif mode=='log':
             def log_ratio(value):
                 valid=(value>0)&(nominal>0)
                 return np.where(valid,np.log(np.where(valid,value,1.)/np.where(valid,nominal,1.)),0.)
             lo,hi=log_ratio(lo),log_ratio(hi)
-        else:lo,hi=lo-nominal,hi-nominal
-        diff,summ=hi-lo,hi+lo
+            diff,summ=hi-lo,hi+lo
+        else:
+            lo,hi=lo-nominal,hi-nominal
+            diff,summ=hi-lo,hi+lo
         if n in dynamic:
             indices.append(lookup[n]);diffs.append(diff);sums.append(summ)
         else:
@@ -124,10 +142,45 @@ def _histogram_record(name,attrs,lookup,dynamic,constant):
     else:
         projection[np.arange(active),np.arange(active)]=1.
         tail=cache.copy();tail[:active]=0.
-    return dict(name=name,mode=mode,base=base,diff=np.array(diffs).reshape(len(indices),active),
+    return dict(name=name,mode='raw' if attrs.get('raw_compcache',False) else mode,
+        base=base,diff=np.array(diffs).reshape(len(indices),active),
         sum=np.array(sums).reshape(len(indices),active),indices=indices,region=region,
         nominal_sum=float(np.sum(nominal)),projection=projection,tail=tail,
         source_active=active,output_size=len(cache))
+
+
+def _lower_hist_sums(nodes):
+    """Neutral-array lowering; never reconstruct low/high from stored sum/diff.
+
+    Each process contributes a morphed histogram. Only processes with Poisson
+    bin shifts need an additional raw-compcache histogram. These use the same
+    grouped tensor operations and retain the native log-mode shift convention.
+    """
+    result=dict(nodes)
+    for name,(cls,inputs,a) in nodes.items():
+        if cls!='CMSHistSum':continue
+        functions=[];poisson_functions=[]
+        for p,index in enumerate(a['process_fields']):
+            morphs=[];storage=[a['storage'][index]]
+            for m,n in enumerate(a['morphs']):
+                field=a['morph_fields'][p*len(a['morphs'])+m]
+                if field>=0:
+                    morphs.append(n);storage.extend((a['storage'][field],a['storage'][field+1]))
+            attrs=dict(observable_name=a['observable_name'],morphs=tuple(morphs),templates=np.array(storage),
+                edges=a['edges'],active=a['active'],cache=a['cache'],errors=a['errors'][p],
+                vertical_type=a['vertical_types'][p],smooth_region=a['smooth_regions'][p],stored_sum_diff=True)
+            value_name=f'{name}::__process_{p}'
+            raw_name=f'{name}::__raw_process_{p}'
+            if value_name in result or raw_name in result:raise ValueError(f'{name}: generated histogram name collision')
+            result[value_name]=('CMSHistFunc',(a['observable_name'],*morphs),attrs)
+            functions.append(value_name)
+            if any(row[0] not in (0,1) and row[p]==2 for row in a['bin_types']):
+                result[raw_name]=('CMSHistFunc',(a['observable_name'],*morphs),dict(attrs,raw_compcache=True))
+                poisson_functions.append(raw_name)
+            else:poisson_functions.append(value_name)
+        result[name]=('CMSHistErrorPropagator',inputs,dict(a,functions=tuple(functions),
+            poisson_functions=tuple(poisson_functions)))
+    return result
 
 
 def pack_templates(nodes,channels,scalars,*,profiles=()):
@@ -137,6 +190,7 @@ def pack_templates(nodes,channels,scalars,*,profiles=()):
     rows and node metadata. This imports no JAX or ROOT and solves no fit.
     """
     validate_program(scalars)
+    nodes=_lower_hist_sums(nodes)
     scalar_names=scalars.metadata['output_names'];lookup={n:i for i,n in enumerate(scalar_names)}
     dynamic_slots=set(scalars.arrays['parameter_slots'].tolist())
     for batch in scalars.metadata['schedule']:dynamic_slots.update(scalars.arrays[batch['outputs']].tolist())
@@ -164,13 +218,14 @@ def pack_templates(nodes,channels,scalars,*,profiles=()):
                 raise UnsupportedModelError(f'{label}: profiled propagator requires a fixed unit outer coefficient')
         else:
             prop=dict(bin_types=(),bin_parameters=());outer=None
+        poisson_functions=prop.get('poisson_functions',functions)
         if not functions or len(functions)!=len(coefs):raise UnsupportedModelError(f'{label}: invalid template components')
         if any(nodes[n][0]!='CMSHistFunc' for n in functions):
             raise UnsupportedModelError(f'{label}: unsupported real-sum function class')
         if any(n not in lookup for n in coefs):raise UnsupportedModelError(f'{label}: missing scalar rate binding')
         first=nodes[functions[0]][2];axis=first['observable_name']
         if tuple(channel['observables'])!=(axis,):raise UnsupportedModelError(f'{label}: template channel requires its direct observable')
-        for n in functions:
+        for n in dict.fromkeys((*functions,*poisson_functions)):
             a=nodes[n][2]
             if a['active']!=first['active'] or a['observable_name']!=axis or not np.array_equal(a['edges'],first['edges']):
                 raise UnsupportedModelError(f'{label}: template component geometry differs')
@@ -200,6 +255,8 @@ def pack_templates(nodes,channels,scalars,*,profiles=()):
         if propagator in profile_by_prop:
             if not np.all(data_valid):raise UnsupportedModelError(f'{label}: profiled data outside histogram geometry')
             declaration=profile_by_prop[propagator]
+            policy=declaration.get('bounds_policy','reject')
+            if policy not in ('reject','clip'):raise ValueError('Unknown analytic-profile bounds policy')
             observed=np.zeros(bcount)
             for b,w in zip(data_bins,weights,strict=True):observed[b]=w  # Native setData assigns the last row.
             fields=['indices','parameters','global_observed','observed','widths','minimum','maximum']
@@ -213,8 +270,9 @@ def pack_templates(nodes,channels,scalars,*,profiles=()):
                 if global_node is None or not global_node[2].get('constant',global_node[0]=='RooConstVar') or global_node[2]['value']!=g:
                     raise UnsupportedModelError(f'{label}: profile global observation differs from declaration')
                 if n in used_profiles:raise UnsupportedModelError(f'{n}: shared analytic profile')
-                used_profiles[n]=dict(channel=len(records),bin=b,global_observed=g,observed=o,width=w,minimum=lo,maximum=hi)
-        records.append(dict(name=label,functions=functions,coefs=coefs,outer=outer,propagator=propagator,
+                used_profiles[n]=dict(channel=len(records),bin=b,global_observed=g,observed=o,width=w,minimum=lo,maximum=hi,
+                                      clip=policy=='clip')
+        records.append(dict(name=label,functions=functions,poisson_functions=poisson_functions,coefs=coefs,outer=outer,propagator=propagator,
             active=active,bcount=bcount,edges=np.array(first['edges']),tail=np.array(first['cache']),
             errors=[np.asarray(nodes[n][2]['errors']) for n in functions],types=kind,parameters=indices,
             data_bins=np.clip(data_bins,0,bcount-1),data_valid=data_valid,weights=weights))
@@ -234,22 +292,16 @@ def pack_templates(nodes,channels,scalars,*,profiles=()):
             if not np.all(np.isfinite(values)):raise UnsupportedModelError(f'{n}: nonfinite fixed histogram')
             initial[hlookup[n],:h['output_size']]=values;folded.append(n)
     arrays={'histogram_values':initial};schedule=[]
+    from .template_morphs import pack_sparse_group
     for gi,(mode,group) in enumerate(sorted(groups.items())):
-        D=len(group);F=max(h['source_active'] for h in group);M=max(len(h['indices']) for h in group)
-        fields=dict(base=np.zeros((D,F)),diff=np.zeros((D,M,F)),sum=np.zeros((D,M,F)),
-            morph_mask=np.zeros((D,M),dtype=bool),region=np.ones(D),source_mask=np.zeros((D,F),dtype=bool),
-            nominal_sum=np.zeros(D),projection=np.zeros((D,B,F)),tail=np.zeros((D,B)))
-        inputs=np.zeros((D,M),dtype=np.int32);outputs=np.array([hlookup[h['name']] for h in group],dtype=np.int32)
-        for i,h in enumerate(group):
-            f,m,b=h['source_active'],len(h['indices']),h['output_size']
-            inputs[i,:m]=h['indices'];fields['morph_mask'][i,:m]=True;fields['source_mask'][i,:f]=True
-            fields['base'][i,:f]=h['base'];fields['diff'][i,:m,:f]=h['diff'];fields['sum'][i,:m,:f]=h['sum']
-            fields['region'][i]=h['region'];fields['nominal_sum'][i]=h['nominal_sum']
-            fields['projection'][i,:b,:f]=h['projection'];fields['tail'][i,:b]=h['tail']
+        inputs,fields=pack_sparse_group(group,B)
+        outputs=np.array([hlookup[h['name']] for h in group],dtype=np.int32)
         arrays[f'morph_inputs_{gi}']=inputs;arrays[f'morph_outputs_{gi}']=outputs
         bindings={k:f'morph_{gi}_{k}' for k in fields}
         arrays.update({bindings[k]:v for k,v in fields.items()})
-        schedule.append(dict(operation='cms_histfunc',mode=mode,inputs=f'morph_inputs_{gi}',outputs=f'morph_outputs_{gi}',buffers=bindings))
+        schedule.append(dict(operation='cms_histfunc',mode=mode,storage='sparse',inputs=f'morph_inputs_{gi}',outputs=f'morph_outputs_{gi}',buffers=bindings))
+    if any(tuple(r['functions'])!=tuple(r['poisson_functions']) for r in records):
+        arrays['poisson_histogram_indices']=np.zeros((C,P),dtype=np.int32)
     arrays.update(histogram_indices=np.zeros((C,P),dtype=np.int32),coefficient_indices=np.zeros((C,P),dtype=np.int32),
         process_mask=np.zeros((C,P),dtype=bool),errors=np.zeros((C,P,B)),bin_types=np.zeros((C,P,B),dtype=np.int32),
         bin_parameter_indices=np.zeros((C,P,B),dtype=np.int32),active_mask=np.zeros((C,B),dtype=bool),
@@ -259,6 +311,8 @@ def pack_templates(nodes,channels,scalars,*,profiles=()):
     for i,r in enumerate(records):
         p,b,rows=len(r['functions']),r['bcount'],len(r['weights'])
         arrays['histogram_indices'][i,:p]=[hlookup[n] for n in r['functions']]
+        if 'poisson_histogram_indices' in arrays:
+            arrays['poisson_histogram_indices'][i,:p]=[hlookup[n] for n in r['poisson_functions']]
         arrays['coefficient_indices'][i,:p]=[lookup[n] for n in r['coefs']];arrays['process_mask'][i,:p]=True
         for j,e in enumerate(r['errors']):arrays['errors'][i,j,:r['active']]=e[:r['active']]
         arrays['bin_types'][i,:p,:b]=r['types'];arrays['bin_parameter_indices'][i,:p,:b]=r['parameters']
@@ -269,11 +323,13 @@ def pack_templates(nodes,channels,scalars,*,profiles=()):
     for field,source,dtype in [('channels','channel',np.int32),('bins','bin',np.int32),('widths','width',np.float64),
         ('observed','observed',np.float64),('globals','global_observed',np.float64),('minimum','minimum',np.float64),('maximum','maximum',np.float64)]:
         arrays['profile_'+field]=np.array([used_profiles[n][source] for n in profile_names],dtype=dtype)
+    if any(p['clip'] for p in used_profiles.values()):
+        arrays['profile_clip']=np.array([used_profiles[n]['clip'] for n in profile_names],dtype=bool)
     schedule.append(dict(operation='histogram_channels_and_profiles'))
     result=TensorBundle(dict(schema='combine-jax.tensor.v1',kind='template_channels',schedule=schedule,
         names=[r['name'] for r in records],histogram_names=hnames,folded_histograms=folded,
         scalar_names=scalar_names,profile_names=profile_names,
-        scope='Aligned CMSHistFunc sums/propagators; native stored morph and rebin semantics; profiles solved on device with original bounds.'),arrays)
+        scope='Aligned CMSHistFunc sums/propagators and CMSHistSum; native stored morph, raw Poisson-shift and rebin semantics; profiles solved on device with original bounds. Optional profile_clip selects ROOT6.30 clipping; absence retains ROOT6.40 range rejection.'),arrays)
     validate_templates(result)
     return result
 
@@ -291,6 +347,10 @@ def validate_templates(bundle):
         propagator_mode=(C,),outer_indices=(C,),data_bins=(C,R),data_valid=(C,R),data_weights=(C,R))
     for n,shape in sizes.items():
         if a[n].shape!=shape:raise ValueError(f'Invalid template buffer {n}')
+    if 'poisson_histogram_indices' in a:
+        raw=a['poisson_histogram_indices']
+        if raw.shape!=(C,P) or raw.dtype!=np.int32 or np.any(raw<0) or np.any(raw>=H):
+            raise ValueError('Invalid raw histogram gather')
     for n in ('process_mask','active_mask','propagator_mode','data_valid'):
         if a[n].dtype!=bool:raise ValueError(f'Invalid mask {n}')
     for n in ('histogram_values','errors','widths','propagator_tail','data_weights'):
@@ -305,25 +365,37 @@ def validate_templates(bundle):
         if a['profile_'+n].shape!=(len(m['profile_names']),):raise ValueError('Profile metadata shape mismatch')
     for n in ('widths','observed','globals','minimum','maximum'):
         if a['profile_'+n].dtype!=np.float64 or np.any(np.isnan(a['profile_'+n])):raise ValueError('Invalid profile numeric buffer')
+    if 'profile_clip' in a and (a['profile_clip'].shape!=(len(m['profile_names']),) or a['profile_clip'].dtype!=bool):
+        raise ValueError('Invalid profile clipping policy buffer')
     if np.any(a['profile_widths']<=0) or np.any(a['profile_observed']<0) or np.any(a['profile_minimum']>a['profile_maximum']):
         raise ValueError('Invalid profile geometry/data/bounds')
     seen=[]
     for batch in m['schedule'][:-1]:
-        if batch['operation']!='cms_histfunc' or batch['mode'] not in ('linear','log'):raise ValueError('Unknown morph operation')
+        if batch['operation']!='cms_histfunc' or batch['mode'] not in ('linear','log','raw'):raise ValueError('Unknown morph operation')
         inputs=a[batch['inputs']];outputs=a[batch['outputs']]
-        if inputs.dtype!=np.int32 or inputs.ndim!=2 or outputs.shape!=(len(inputs),) or outputs.dtype!=np.int32:
+        sparse=batch.get('storage','dense')=='sparse'
+        if batch.get('storage','dense') not in ('dense','sparse'):raise ValueError('Unknown morph storage')
+        if (inputs.dtype!=np.int32 or inputs.ndim!=(1 if sparse else 2)
+                or outputs.ndim!=1 or (not sparse and outputs.shape!=(len(inputs),)) or outputs.dtype!=np.int32):
             raise ValueError('Invalid morph gather layout')
         if np.any(inputs<0) or np.any(inputs>=len(m['scalar_names'])) or np.any(outputs<0) or np.any(outputs>=H):raise ValueError('Morph gather out of range')
         buffers={k:a[n] for k,n in batch['buffers'].items()}
-        D,M=inputs.shape;F=buffers['base'].shape[1]
-        shapes=dict(base=(D,F),diff=(D,M,F),sum=(D,M,F),morph_mask=(D,M),region=(D,),source_mask=(D,F),
+        D=len(outputs);F=buffers['base'].shape[1];M=len(inputs) if sparse else inputs.shape[1]
+        shapes=dict(base=(D,F),region=(D,),source_mask=(D,F),
             nominal_sum=(D,),projection=(D,B,F),tail=(D,B))
+        if sparse:
+            E=buffers['entry_morphs'].size
+            shapes.update(diff=(E,),sum=(E,),morph_histograms=(M,),entry_morphs=(E,),entry_bins=(E,))
+        else:shapes.update(diff=(D,M,F),sum=(D,M,F),morph_mask=(D,M))
         if set(buffers)!=set(shapes):raise ValueError('Invalid morph buffer names')
         for n,shape in shapes.items():
-            dtype=bool if n.endswith('_mask') else np.float64
+            dtype=np.int32 if n in ('morph_histograms','entry_morphs','entry_bins') else bool if n.endswith('_mask') else np.float64
             if buffers[n].shape!=shape or buffers[n].dtype!=dtype or not np.all(np.isfinite(buffers[n])):
                 raise ValueError(f'Invalid morph buffer {n}')
-        if np.any(buffers['region']<=0):raise ValueError('Invalid morph smoothing region')
+        if np.any(buffers['region']<0):raise ValueError('Invalid morph smoothing region')
+        if sparse:
+            from .template_morphs import validate_sparse_indices
+            validate_sparse_indices(buffers,D,M)
         seen.extend(outputs.tolist())
     if len(set(seen))!=len(seen):raise ValueError('Repeated dynamic histogram')
     folded=set(m['folded_histograms']);dynamic={m['histogram_names'][i] for i in seen}
@@ -341,6 +413,7 @@ def evaluate_templates(bundle,scalar_values):
 
 
 def make_template_function(bundle):
+    import jax
     import jax.numpy as jnp
     validate_templates(bundle)
     schedule=tuple(dict(b) for b in bundle.metadata['schedule'][:-1]);size=len(bundle.metadata['scalar_names'])
@@ -349,7 +422,8 @@ def make_template_function(bundle):
         histograms=arrays['histogram_values']
         for batch in schedule:
             buffers={k:arrays[n] for k,n in batch['buffers'].items()}
-            values=morph_batch(batch['mode'],scalar_values[arrays[batch['inputs']]],buffers,jnp)
+            values=morph_batch(batch['mode'],scalar_values[arrays[batch['inputs']]],buffers,jnp,
+                segment_sum=lambda v,i,n:jax.ops.segment_sum(v,i,num_segments=n,indices_are_sorted=True))
             histograms=histograms.at[arrays[batch['outputs']]].set(values)
         return template_terms(histograms,scalar_values,arrays,jnp)
     return evaluate

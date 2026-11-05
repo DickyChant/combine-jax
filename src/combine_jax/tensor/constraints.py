@@ -94,6 +94,30 @@ def pack_constraints(nodes, names, axes, scalars, *, profile_names=(), fixed_nor
     folded_normalizations, folded_constraints = [], []
     for position,name in enumerate(names):
         cls, inputs, attrs = nodes[name]
+        if cls == 'RooUniform':
+            norm_axes = tuple(axes.get(name,()))
+            if not set(norm_axes) <= set(inputs):
+                raise UnsupportedModelError(f'{name}: Uniform constraint normalization is not over direct arguments')
+            widths = []
+            for axis in norm_axes:
+                if nodes[axis][0] != 'RooRealVar':
+                    raise UnsupportedModelError(f'{name}: Uniform integral axis must be a RooRealVar')
+                width = nodes[axis][2]['maximum']-nodes[axis][2]['minimum']
+                if not math.isfinite(width) or width <= 0:
+                    raise UnsupportedModelError(f'{name}: Uniform constraint requires finite positive bounds')
+                widths.append(width)
+            integral = math.prod(widths)
+            if not math.isfinite(integral) or integral <= 0:
+                raise UnsupportedModelError(f'{name}: nonfinite Uniform normalization')
+            # Raw density is one regardless of the floating argument values.
+            # Domain bounds are fit metadata, so this constraint is constant.
+            record = dict(name=name,position=position,indices=[],no_rounding=True,
+                observed=0.,log_factorial=0.,bounds=(0.,1.),integer_bounds=(0,1),
+                axis_is_first=False,log_normalization=0.,fixed_values=math.log(integral))
+            groups[('fixed','none',False)].append(record)
+            folded_constraints.append(name)
+            if norm_axes: folded_normalizations.append(name)
+            continue
         if cls not in ('SimpleGaussianConstraint','RooGaussian','RooPoisson','SimplePoissonConstraint'):
             raise UnsupportedModelError(f'{name} ({cls}): tensor constraint type not supported')
         kind = ('gaussian' if cls in ('SimpleGaussianConstraint','RooGaussian') else

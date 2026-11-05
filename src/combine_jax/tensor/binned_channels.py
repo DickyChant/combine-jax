@@ -4,29 +4,34 @@ The importer resolves normalization requests and folds fixed quantities. Runtime
 programs batch by operator, dependency depth and data-row count, never RooFit node.
 """
 from collections import defaultdict
+import json
 import math
 
 import numpy as np
 
 from ..graph import UnsupportedModelError
+from ..product_axes import simple_product_axes
+from ..hist_pdf_geometry import integral_table
 from .bundle import TensorBundle
 from .analytic_shapes import (ANALYTIC_CLASSES,ANALYTIC_OPERATIONS,GRID_ANALYTIC_OPERATIONS,pack_analytic_query,
     analytic_operation,validate_analytic_fields)
 from .grid_expressions import GridBuilder,GRID_OPERATIONS,grid_operation,validate_grid_fields
+from .numeric_shapes import (NUMERIC_CLASSES,NUMERIC_OPERATIONS,bind_literals,
+    numeric_operation,validate_numeric_fields)
 from .shape_data import prepare_shape_data,validate_shape_data,padded_size
 from .fast_histograms import (FAST_CLASSES,scalar_bindings,pack_fast_histograms,pack_fast_queries,
     make_fast_function,make_query_function,evaluate_fast_histograms,evaluate_fast_queries,
     validate_fast_histograms,validate_fast_queries)
 
 
-BINNED_CLASSES=FAST_CLASSES|ANALYTIC_CLASSES|frozenset(('RooAddPdf','RooProdPdf','VerticalInterpPdf',
-    'RooParametricHist2D','RooParametricStepFunction','RooHistPdf','RooUniform','RooMultiPdf'))
+BINNED_CLASSES=FAST_CLASSES|ANALYTIC_CLASSES|NUMERIC_CLASSES|frozenset(('RooAddPdf','RooProdPdf','SimpleProdPdf','VerticalInterpPdf',
+    'RooParametricHist','RooParametricHist2D','RooParametricStepFunction','RooHistPdf','RooUniform','RooMultiPdf'))
 
 
 def density_children(node):
     cls,inputs,a=node
     if cls=='RooAddPdf':return a['pdfs']
-    if cls=='RooProdPdf':return inputs
+    if cls in ('RooProdPdf','SimpleProdPdf'):return inputs
     if cls=='VerticalInterpPdf':return a['functions']
     if cls=='RooMultiPdf':return a['alternatives'] if a.get('profiled') else (a['selected'],)
     return ()
@@ -60,7 +65,7 @@ def product_normalizations(name,node,axes,depends):
     return normalizations
 
 
-def operation(op,values,scalars,b,xp=np):
+def operation(op,values,scalars,b,xp=np,*,spec=None):
     """Rows have axes (batch, children or coefficients, data)."""
     if op=='select_pdf':
         selected=xp.take_along_axis(b['children'],b['choice'][:,None,None],axis=1)[:,0,:]
@@ -71,10 +76,24 @@ def operation(op,values,scalars,b,xp=np):
         if 'child_mask' in b:parameters=xp.where(b['child_mask'][:,:,None],parameters,0.)
         return analytic_operation(op,scalars,b,xp,parameters=parameters)
     if op in GRID_OPERATIONS:return grid_operation(op,values,b,xp)
+    if op in NUMERIC_OPERATIONS:return numeric_operation(op,scalars,b,spec,xp)
     if op=='divide':return values[b['children'][:,0,:]]/values[b['children'][:,1,:]]
     if op=='product':
         return xp.prod(xp.where(b['child_mask'][:,:,None],values[b['children']],1.),axis=1)*b['factor'][:,None]
     coefs=xp.where(b['coef_mask'],scalars[b['coefs']],0.)
+    if op in ('parametric1d_bins','parametric1d_sum'):
+        raw=xp.take_along_axis(coefs,b['bin_indices'],axis=1)
+        theta=xp.take_along_axis(coefs,b['morph_indices'],axis=1)
+        region=b['region'][:,None]
+        z=theta/xp.where(region>0,region,1.)
+        smooth=xp.where(xp.abs(theta)>=region,xp.where(theta>0,1.,-1.),
+                        .125*z*(z*z*(3*z*z-10)+15))
+        denominator=xp.where(b['bin_mask'],raw,1.)
+        factors=1.+(1./denominator[:,:,None])*(.5*theta[:,None,:])*(b['diffs']+smooth[:,None,:]*b['sums'])
+        morphed=xp.where(b['bin_mask'],raw*xp.prod(xp.where(b['morph_mask'][:,None,:],factors,1.),axis=2),0.)
+        if op=='parametric1d_sum':return xp.sum(morphed,axis=1)[:,None]+b['broadcast']
+        selected=xp.take_along_axis(morphed,b['data_bins'],axis=1)/b['volume']
+        return xp.where(b['data_valid'],selected,0.)
     if op=='coef_sum':return xp.sum(coefs,axis=1)[:,None]+b['broadcast']
     if op=='parametric_bins':
         selected=xp.take_along_axis(coefs,b['data_bins'],axis=1)/b['volume']
@@ -149,9 +168,12 @@ def _stack_records(records):
 
 
 def pack_binned_channels(nodes,channels,scalars,*,compact_data=True):
+    from ..cbshape import reject_untranslated_cache_routes
+    reject_untranslated_cache_routes(nodes, [c['pdf'] for c in channels if not c.get('masked',False)])
     channels,data_layouts,data_arrays=prepare_shape_data(channels,compact=compact_data)
     lookup,dynamic,constant=scalar_bindings(scalars)
     scalar_initial=np.array([constant.get(n,0.) for n in scalars.metadata['output_names']])
+    add_contexts={}
     fast_names=set();active_pdfs=set()
     def visit(name):
         if name in active_pdfs:return
@@ -193,17 +215,17 @@ def pack_binned_channels(nodes,channels,scalars,*,compact_data=True):
         nonlocal initial_size
         start=initial_size;initial_size+=rows;initial_chunks.append(np.zeros(rows))
         return np.arange(start,initial_size,dtype=np.int32)
-    def emit(op,rows,fields,children=(),coef_names=(),label=''):
+    def emit(op,rows,fields,children=(),coef_names=(),label='',*,spec=None):
         output=allocate(rows);depth=1+max((c[2] for c in children),default=-1)
         is_dynamic=op=='select_pdf' or any(c[1] for c in children) or any(n in dynamic for n in coef_names)
         if children:fields['children']=np.stack([c[0] for c in children])
-        records.append(dict(op=op,rows=rows,fields=fields,outputs=output,dynamic=is_dynamic,depth=depth,label=label))
+        records.append(dict(op=op,rows=rows,fields=fields,outputs=output,dynamic=is_dynamic,depth=depth,label=label,spec=spec))
         return output,is_dynamic,depth
     def fixed(values,label):
         values=np.asarray(values,dtype=np.float64).reshape(-1);output=allocate(len(values))
         initial_chunks[-1][:]=values
         folded.append(label);return output,False,-1
-    def analytic_grid(channel_index,ch,name,mode,axes,label):
+    def coordinate_grid(channel_index,ch,name,mode,axes):
         # Compress actual data coordinates, not an approximate integration grid.
         data_axes=tuple(sorted(v for v in ch['observables'] if depends(name,v) and (mode!='integral' or v not in axes)))
         key=channel_index,data_axes
@@ -218,12 +240,15 @@ def pack_binned_channels(nodes,channels,scalars,*,compact_data=True):
             builder=GridBuilder(nodes,coords,count,lookup,dynamic,constant,emit,fixed,f'{ch["name"]}:grid:{data_axes}')
             grids[key]=(builder,coords,count,distinct,inverse)
         builder,coords,count,distinct,inverse=grids[key]
+        return builder,coords,count,distinct,inverse,data_axes
+    def analytic_grid(channel_index,ch,name,mode,axes,label):
+        builder,coords,count,distinct,inverse,data_axes=coordinate_grid(channel_index,ch,name,mode,axes)
         coordinates={**coords,**{v:np.zeros(count) for v in axes if v not in coords}}
         op,fields,names=pack_analytic_query(name,nodes[name],mode,axes,coordinates,nodes,lookup,depends,count,allow_grid=True)
         op=op.replace('analytic_','gridanalytic_',1);fields={k:v for k,v in fields.items() if k not in ('coefs','coef_mask')}
         parameters=[builder.node(n) for n in names]
         if all(v.fixed is not None for v in parameters):
-            params=np.stack([v.fixed for v in parameters])[None,...]
+            params=np.stack([v.fixed for v in parameters])[None,...] if parameters else np.empty((1,0,count))
             value=analytic_operation(op,None,{k:v[None,...] for k,v in fields.items()},parameters=params)[0]
             if not np.all(np.isfinite(value)):raise UnsupportedModelError(f'{label}: invalid fixed analytic grid')
             result=fixed(value,label)
@@ -232,6 +257,49 @@ def pack_binned_channels(nodes,channels,scalars,*,compact_data=True):
             result=emit(op,count,fields,[builder.reference(v) for v in parameters],label=label)
         grid_queries.append(dict(name=label,coordinate_axes=data_axes,grid_rows=count,distinct_grid_rows=distinct,data_rows=len(inverse),folded=not result[1]))
         return result[0][inverse],result[1],result[2]
+    def numeric_query(channel_index,ch,name,mode,axes,label):
+        cls,inputs,a=nodes[name];rows=len(ch['weights'])
+        if cls=='RooGenericPdf' and mode=='value':
+            builder,_,count,distinct,inverse,data_axes=coordinate_grid(channel_index,ch,name,mode,axes)
+            value=builder.formula(a['ast'],[builder.node(n) for n in inputs])
+            result=builder.reference(value)
+            grid_queries.append(dict(name=label,coordinate_axes=data_axes,grid_rows=count,distinct_grid_rows=distinct,
+                data_rows=len(inverse),folded=not result[1]))
+            return result[0][inverse],result[1],result[2]
+        if mode=='integral':
+            if len(axes)!=1:raise UnsupportedModelError(f'{label}: numerical normalization requires one axis')
+            axis=axes[0]
+        else:axis=a['fields'][0]
+        if axis not in ch['coordinates'] or nodes[axis][0]!='RooRealVar':
+            raise UnsupportedModelError(f'{label}: numerical query needs a direct coordinate')
+        low,high=(float(nodes[axis][2][n]) for n in ('minimum','maximum'))
+        if not math.isfinite(low+high) or high<=low:raise UnsupportedModelError(f'{label}: invalid numerical bounds')
+        if cls=='RooGenericPdf':
+            folded=a['fixed_normalizations'].get(axis)
+            if folded and tuple(folded['bounds'])==(low,high):return fixed(np.full(rows,folded['value']),label)
+            if axis not in inputs or any(depends(n,axis) for n in inputs if n!=axis):
+                raise UnsupportedModelError(f'{label}: numerical GenericPdf requires a direct axis and independent arguments')
+            names=tuple(n for n in inputs if n!=axis)
+            fields=scalar_fields(names,minimum=0);fields['defaults']=np.zeros(len(names))
+            literals=[];expression=bind_literals(a['ast'],literals)
+            fields['literals']=np.asarray(literals,dtype=np.float64)
+            spec=dict(integration_config=a['integration_config'],expression=expression,axis_index=inputs.index(axis),parameter_count=len(names))
+            op='numeric_generic_integral'
+        else:
+            if axis!=a['fields'][0]:raise UnsupportedModelError(f'{label}: ModZ requires its direct axis')
+            names=(*a['fields'][1:],*a['coefficients'])
+            if any(n and (n not in lookup or depends(n,axis)) for n in names):
+                raise UnsupportedModelError(f'{label}: conditional ModZ parameters require additional lowering')
+            fields=dict(coefs=np.array([lookup[n] if n else 0 for n in names],dtype=np.int32),
+                coef_mask=np.array([bool(n) for n in names]),defaults=np.array([0.,0.,2.,91.2,2.5]+[0.]*len(a['coefficients'])),
+                reference=np.asarray(a['reference_range'],dtype=np.float64))
+            spec=dict(integration_config=a['integration_config'],parameter_count=len(names))
+            op='numeric_modz_'+mode
+        fields['bounds']=np.array([low,high])
+        if mode=='value':fields['data']=np.asarray(ch['coordinates'][axis],dtype=np.float64)
+        count=1 if mode=='integral' else rows
+        result=emit(op,count,fields,coef_names=tuple(n for n in names if n),label=label,spec=spec)
+        return (np.broadcast_to(result[0],(rows,)),result[1],result[2]) if mode=='integral' else result
     def request(channel_index,ch,name,mode,axes):
         axes=tuple(sorted(axes));key=channel_index,name,mode,axes
         if key in cache:return cache[key]
@@ -255,17 +323,60 @@ def pack_binned_channels(nodes,channels,scalars,*,compact_data=True):
                 op,fields,coefs=pack_analytic_query(name,nodes[name],mode,axes,coords,nodes,lookup,depends,R,allow_grid=True)
                 if compact_data or any(n and n not in lookup for n in coefs):result=analytic_grid(channel_index,ch,name,mode,axes,label)
                 else:result=emit(op,R,fields,coef_names=coefs,label=label)
+        elif cls in NUMERIC_CLASSES:
+            if mode=='density':
+                children=[request(channel_index,ch,name,m,axes) for m in ('value','integral')]
+                result=emit('divide',R,{},children,label=label)
+            else:result=numeric_query(channel_index,ch,name,mode,axes,label)
         elif cls=='RooAddPdf':
-            if mode!='density':raise UnsupportedModelError(f'{label}: RooAddPdf requires a normalization set')
-            children=[request(channel_index,ch,n,'density',axes) for n in a['pdfs']]
+            context_mode='density' if mode=='density' and axes else 'raw'
+            if add_contexts.setdefault(name,context_mode)!=context_mode:
+                raise UnsupportedModelError(f'{label}: mixed raw/normalized RooAddPdf contexts require native cache resolution')
+            children=[]
+            for n in a['pdfs']:
+                selected=tuple(axis for axis in axes if depends(n,axis)) if mode=='integral' else axes
+                child=request(channel_index,ch,n,mode,selected)
+                children.append(child)
             coefs=a['coefs'];fields=scalar_fields(coefs,minimum=len(children))
             fields['child_mask']=np.ones(len(children),dtype=bool)
             if not a['extended']:
                 last=np.zeros(len(children));last[-1]=1.;fields['last_component']=last
             if len(coefs)!=(len(children) if a['extended'] else len(children)-1):raise UnsupportedModelError(f'{label}: invalid mixture layout')
             result=emit('mixture_yields' if a['extended'] else 'mixture_fractions',R,fields,children,coefs,label)
+        elif cls=='SimpleProdPdf':
+            if mode=='density':
+                children=[request(channel_index,ch,name,m,axes) for m in ('value','integral')]
+                result=emit('divide',R,{},children,label=label)
+            else:
+                selected=(simple_product_axes(inputs,a['settings'],axes,depends) if mode=='integral' else [()]*len(inputs))
+                children=[request(channel_index,ch,n,mode,chosen) for n,chosen in zip(inputs,selected,strict=True)]
+                result=(emit('product',R,dict(child_mask=np.ones(len(children),dtype=bool),factor=np.array(1.)),children,label=label)
+                    if children else fixed(np.ones(R),label))
         elif cls=='RooProdPdf':
             factor=1.;children=[]
+            joint=a.get('joint_spline_cheby') or a.get('joint_numeric_product')
+            if mode=='density' and axes and joint:
+                if axes!=(joint['axis'],) or tuple(nodes[joint['axis']][2][n] for n in ('minimum','maximum'))!=tuple(joint['bounds']):
+                    raise UnsupportedModelError(f'{label}: joint product normalization axis/range changed')
+                raw=request(channel_index,ch,name,'value',())
+                spec=dict(integration_config=joint['integration_config'],parameter_count=len(joint['coefs']))
+                if 'joint_numeric_product' in a:
+                    fields=dict(coefs=np.array([lookup[n] if n else 0 for n in joint['coefs']],dtype=np.int32),
+                        coef_mask=np.array([n is not None for n in joint['coefs']]),defaults=np.asarray(joint['defaults']),
+                        bounds=np.asarray(joint['bounds']),references=np.asarray(joint['references']))
+                    spec.update(shape=joint['shape'],shape_parameter_count=joint['shape_parameter_count'])
+                    op='numeric_joint_integral'
+                else:
+                    fields=scalar_fields(joint['coefs'],minimum=0)
+                    fields.update(defaults=np.zeros(len(joint['coefs'])),bounds=np.asarray(joint['bounds']),
+                                  refinement_table=np.asarray(joint['refinement_table']))
+                    op='numeric_linear_basis_integral'
+                    if len(joint.get('coefficient_groups',()))>1:
+                        op='numeric_product_basis_integral';spec['coefficient_groups']=joint['coefficient_groups']
+                denominator=emit(op,1,fields,coef_names=tuple(n for n in joint['coefs'] if n),label=label+':joint_denominator',spec=spec)
+                denominator=(np.broadcast_to(denominator[0],(R,)),*denominator[1:])
+                result=emit('divide',R,{},[raw,denominator],label=label)
+                cache[key]=result;return result
             if mode=='density' and axes:
                 normalizations=product_normalizations(name,nodes[name],axes,depends)
                 children=[request(channel_index,ch,n,'density',norm) for n,norm in zip(inputs,normalizations,strict=True) if norm]
@@ -273,8 +384,11 @@ def pack_binned_channels(nodes,channels,scalars,*,compact_data=True):
                 used=set()
                 for n in inputs:
                     selected=tuple(v for v in axes if depends(n,v))
-                    if used&set(selected):raise UnsupportedModelError(f'{label}: overlapping raw product integral')
-                    used.update(selected);children.append(request(channel_index,ch,n,'integral',selected))
+                    if used&set(selected) and not (joint and axes==(joint['axis'],)):
+                        raise UnsupportedModelError(f'{label}: overlapping raw product integral')
+                    used.update(selected)
+                    children.append(fixed(np.ones(R),label+':unit:'+n) if joint and axes==(joint['axis'],) and n in joint.get('unit_integral_factors',())
+                                    else request(channel_index,ch,n,'integral',selected))
                 factor=math.prod(nodes[v][2]['maximum']-nodes[v][2]['minimum'] for v in set(axes)-used)
             else:children=[request(channel_index,ch,n,'value',()) for n in inputs]
             result=(emit('product',R,dict(child_mask=np.ones(len(children),dtype=bool),factor=np.array(factor)),children,label=label)
@@ -284,13 +398,44 @@ def pack_binned_channels(nodes,channels,scalars,*,compact_data=True):
                 children=[request(channel_index,ch,name,m,axes) for m in ('value','integral')]
                 result=emit('divide',R,{},children,label=label)
             else:
-                children=[request(channel_index,ch,n,mode,axes) for n in a['functions']]
+                child_index,child_channel,rows=channel_index,ch,R
+                if mode=='integral' and R and not any(depends(name,v) for v in ch['observables'] if v not in axes):
+                    # Match RooRealIntegral's full-normalization cache at the
+                    # first positive row, before/after optional row compaction.
+                    positive=np.flatnonzero(ch['weights']>0)
+                    anchor=int(positive[0]) if len(positive) else 0
+                    child_index=(channel_index,'normalization',axes)
+                    child_channel={**ch,'weights':np.ones(1),
+                        'coordinates':{v:np.asarray(x)[anchor:anchor+1] for v,x in coords.items()}}
+                    rows=1
+                children=[request(child_index,child_channel,n,mode,axes) for n in a['functions']]
                 if len(children)!=2*len(a['coefs'])+1 or a['algorithm']<0 or a['region']<0:raise UnsupportedModelError(f'{label}: invalid vertical interpolation')
                 fields=scalar_fields(a['coefs'],minimum=0)
                 fields.update(region=np.array(a['region'],dtype=np.float64),pdf_floor=np.array(a['pdf_floor'],dtype=np.float64),
                     second_floor=np.array(a['integral_floor'] if mode=='integral' else a['pdf_floor'],dtype=np.float64))
                 op=f'vertical_{a["algorithm"]}' if a['algorithm'] in (0,1) else 'vertical_polynomial'
-                result=emit(op,R,fields,children,a['coefs'],label)
+                result=emit(op,rows,fields,children,a['coefs'],label)
+                if rows!=R:result=(np.broadcast_to(result[0],(R,)),*result[1:])
+        elif cls=='RooParametricHist':
+            if mode=='density':
+                children=[request(channel_index,ch,name,m,axes) for m in ('value','integral')]
+                result=emit('divide',R,{},children,label=label)
+            else:
+                names=(*a['coefs'],*a['morphs']);fields=scalar_fields(names)
+                count=len(a['coefs']);morph_count=len(a['morphs'])
+                fields.update(bin_indices=np.arange(count,dtype=np.int32),bin_mask=np.ones(count,dtype=bool),
+                    morph_indices=np.arange(count,count+morph_count,dtype=np.int32),morph_mask=np.ones(morph_count,dtype=bool),
+                    diffs=np.asarray(a['diffs']),sums=np.asarray(a['sums']),region=np.array(a['region'],dtype=np.float64))
+                if mode=='integral':
+                    if tuple(axes)!=tuple(a['axes']):raise UnsupportedModelError(f'{label}: parametric histogram requires its full axis integral')
+                    result=emit('parametric1d_sum',R,{**fields,'broadcast':np.zeros(R)},coef_names=names,label=label)
+                else:
+                    edge=np.asarray(a['edges'][0]);width=np.asarray(a['widths'][0]);x=np.asarray(coords[a['axes'][0]])
+                    if len(edge)!=count+1 or width.shape!=(count,) or np.any(np.diff(edge)<=0):
+                        raise UnsupportedModelError(f'{label}: invalid parametric histogram geometry')
+                    index=np.clip(np.searchsorted(edge,x,side='right')-1,0,count-1).astype(np.int32)
+                    fields.update(data_bins=index,data_valid=(x>=edge[0])&(x<edge[-1]),volume=width[index])
+                    result=emit('parametric1d_bins',R,fields,coef_names=names,label=label)
         elif cls in ('RooParametricHist2D','RooParametricStepFunction'):
             if mode=='density':
                 children=[request(channel_index,ch,name,m,axes) for m in ('value','integral')]
@@ -323,16 +468,18 @@ def pack_binned_channels(nodes,channels,scalars,*,compact_data=True):
             result=fixed(np.full(R,1. if mode=='value' else volume if mode=='integral' else 1./volume),label)
         elif cls=='RooHistPdf':
             if mode!='value':
-                if set(axes)!=set(a['axes']):raise UnsupportedModelError(f'{label}: partial histogram integral')
-                for axis,e in zip(a['axes'],a['edges'],strict=True):
-                    if nodes[axis][2]['minimum']>e[0] or nodes[axis][2]['maximum']<e[-1]:raise UnsupportedModelError(f'{label}: restricted histogram integral')
-            if mode=='integral':result=fixed(np.full(R,a['sum_weights']),label)
+                remaining,edges,table=integral_table(label,a,axes,
+                    {axis:tuple(nodes[axis][2][k] for k in ('minimum','maximum')) for axis in axes})
+                indices=tuple(np.clip(np.searchsorted(edge,np.asarray(coords[axis]),side='right')-1,0,len(edge)-2)
+                              for axis,edge in zip(remaining,edges,strict=True))
+                denominator=np.broadcast_to(table[indices] if remaining else table,(R,))
+            if mode=='integral':result=fixed(denominator,label)
             else:
                 index=[];valid=np.ones(R,dtype=bool)
                 for axis,e in zip(a['axes'],a['edges'],strict=True):
                     x=np.asarray(coords[axis]);index.append(np.clip(np.searchsorted(e,x,side='right')-1,0,len(e)-2));valid&=(x>=e[0])&(x<=e[-1])
                 value=np.where(valid,np.maximum(np.asarray(a['values'])[tuple(index)],0.),0.)
-                result=fixed(value if mode=='value' else value/a['sum_weights'],label)
+                result=fixed(value if mode=='value' else value/denominator,label)
         else:raise UnsupportedModelError(f'{label}: unsupported binned PDF {cls}')
         cache[key]=result;return result
     channel_records=[]
@@ -372,9 +519,9 @@ def pack_binned_channels(nodes,channels,scalars,*,compact_data=True):
         else:fast_outputs.append(output);fast_inputs.append(indices)
     groups=defaultdict(list)
     for r in records:
-        if r['dynamic']:groups[(r['depth'],r['op'],r['rows'])].append(r)
+        if r['dynamic']:groups[(r['depth'],r['op'],r['rows'],json.dumps(r['spec'],sort_keys=True))].append(r)
         else:
-            value=operation(r['op'],initial,scalar_initial,{k:v[None,...] for k,v in r['fields'].items()})[0]
+            value=operation(r['op'],initial,scalar_initial,{k:v[None,...] for k,v in r['fields'].items()},spec=r['spec'])[0]
             if not np.all(np.isfinite(value)):raise UnsupportedModelError(f'{r["label"]}: invalid fixed density')
             initial[r['outputs']]=value;folded.append(r['label'])
     records.clear()
@@ -383,10 +530,11 @@ def pack_binned_channels(nodes,channels,scalars,*,compact_data=True):
     if discrete:arrays['discrete_indices']=np.array([entry['initial'] for entry in discrete],dtype=np.int32)
     fast_outputs.clear();fast_inputs.clear();fast_bindings.clear()
     schedule=[]
-    for gi,((depth,op,rows),group) in enumerate(sorted(groups.items())):
+    for gi,((depth,op,rows,spec_key),group) in enumerate(sorted(groups.items())):
         fields=_stack_records([r['fields'] for r in group]);fields['outputs']=np.stack([r['outputs'] for r in group])
         bindings={k:f'program_{gi}_{k}' for k in fields};arrays.update({bindings[k]:v for k,v in fields.items()})
         schedule.append(dict(operation=op,depth=depth,buffers=bindings))
+        if group[0]['spec'] is not None:schedule[-1]['spec']=group[0]['spec']
         group.clear()
     channel_initial=np.zeros(len(channel_records));channel_groups=defaultdict(list);folded_channels=[]
     for i,r in enumerate(channel_records):
@@ -460,7 +608,7 @@ def validate_binned_channels(bundle):
         for batch in sequence:
             b={k:a[n] for k,n in batch['buffers'].items()}
             op=batch['operation']
-            allowed=ANALYTIC_OPERATIONS|GRID_ANALYTIC_OPERATIONS|GRID_OPERATIONS|{'divide','product','coef_sum','parametric_bins','step_bins','mixture_yields','mixture_fractions',
+            allowed=ANALYTIC_OPERATIONS|GRID_ANALYTIC_OPERATIONS|GRID_OPERATIONS|NUMERIC_OPERATIONS|{'divide','product','coef_sum','parametric_bins','parametric1d_bins','parametric1d_sum','step_bins','mixture_yields','mixture_fractions',
                      'vertical_0','vertical_1','vertical_polynomial','select_pdf'}
             if op not in ({'extended_binned_mixture'} if is_nll else allowed):raise ValueError('Unknown binned operation')
             indices(b['outputs'],len(m['names']) if is_nll else N,'outputs')
@@ -479,6 +627,17 @@ def validate_binned_channels(bundle):
             if 'data_bins' in b:
                 indices(b['data_bins'],b['coefs'].shape[1],'data_bins')
                 if b['data_bins'].shape!=(H,R) or b['data_valid'].shape!=(H,R) or b['data_valid'].dtype!=bool:raise ValueError('Invalid data gather')
+            if op in ('parametric1d_bins','parametric1d_sum'):
+                for prefix in ('bin','morph'):
+                    table,mask=b[prefix+'_indices'],b[prefix+'_mask']
+                    indices(table,b['coefs'].shape[1],prefix+'_indices')
+                    if table.ndim!=2 or table.shape[0]!=H or mask.shape!=table.shape or mask.dtype!=bool:
+                        raise ValueError('Invalid parametric histogram parameter indices')
+                count,morph_count=b['bin_indices'].shape[1],b['morph_indices'].shape[1]
+                if (not count or b['diffs'].shape!=(H,count,morph_count) or b['sums'].shape!=b['diffs'].shape
+                        or b['region'].shape!=(H,) or np.any(b['region']<0)):
+                    raise ValueError('Invalid parametric histogram morph tables')
+                if op=='parametric1d_bins':indices(b['data_bins'],count,'parametric1d data_bins')
             if is_nll and (b['weights'].shape!=(H,R) or np.any(b['weights']<0) or b['correction'].shape!=(H,)):raise ValueError('Invalid extended NLL buffers')
             if op=='divide' and b['children'].shape[1]!=2:raise ValueError('Division needs two inputs')
             if op=='select_pdf':
@@ -492,6 +651,7 @@ def validate_binned_channels(bundle):
             if op.startswith('vertical_') and b['children'].shape[1]!=2*b['coefs'].shape[1]+1:raise ValueError('Vertical component/morph mismatch')
             if op in ANALYTIC_OPERATIONS|GRID_ANALYTIC_OPERATIONS:validate_analytic_fields(op,b,R)
             if op in GRID_OPERATIONS:validate_grid_fields(op,b,R)
+            if op in NUMERIC_OPERATIONS:validate_numeric_fields(op,b,batch.get('spec'),R)
             for n in ('volume','last_width'):
                 if n in b and np.any(b[n]<=0):raise ValueError('Invalid bin volume/width')
             for n,value in b.items():
@@ -505,7 +665,7 @@ def evaluate_binned_channels(bundle,scalar_values):
     fast=evaluate_fast_queries(parts['queries'],evaluate_fast_histograms(parts['histograms'],scalar_values))
     values=a['initial_values'].copy();values[a['fast_outputs']]=fast[a['fast_inputs']]
     for batch in bundle.metadata['program']:
-        b=program_fields(batch,a);values[b['outputs']]=operation(batch['operation'],values,scalar_values,b)
+        b=program_fields(batch,a);values[b['outputs']]=operation(batch['operation'],values,scalar_values,b,spec=batch.get('spec'))
     output=a['initial_nll'].copy()
     for batch in bundle.metadata['nll_program']:
         b=program_fields(batch,a);output[b['outputs']]=nll_batch(values,scalar_values,b)
@@ -538,7 +698,7 @@ def make_binned_function(bundle, *, gradient='ad', row_chunk_size=1024):
         values=arrays['initial_values'].at[arrays['fast_outputs']].set(selected,
             unique_indices=True,mode='promise_in_bounds',wrap_negative_indices=False)
         for batch in program:
-            b=program_fields(batch,arrays);values=values.at[b['outputs']].set(operation(batch['operation'],values,scalar_values,b,jnp),
+            b=program_fields(batch,arrays);values=values.at[b['outputs']].set(operation(batch['operation'],values,scalar_values,b,jnp,spec=batch.get('spec')),
                 unique_indices=True,mode='promise_in_bounds',wrap_negative_indices=False)
         return values
     def evaluate(scalar_values,arrays):

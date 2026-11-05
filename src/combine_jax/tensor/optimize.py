@@ -8,7 +8,8 @@ OPTIMIZER_STATUS = {0: 'converged', 1: 'iteration_limit', 2: 'line_search_failed
 
 def make_bfgs(function, *, max_iterations=1000, max_linesearch=40,
               gradient_tolerance=1e-6,armijo_roundoff_multiplier=8.,
-              stopping_criterion='projected_gradient', edm_tolerance=1e-4):
+              stopping_criterion='projected_gradient', edm_tolerance=1e-4,
+              inverse_update_block_size=0):
     """Return a JIT-compatible minimizer in caller-scaled free coordinates.
 
     Convergence uses the box-projected gradient by default. Optional ``edm``
@@ -28,9 +29,15 @@ def make_bfgs(function, *, max_iterations=1000, max_linesearch=40,
     rejecting unresolved decreases. This never changes the selected threshold.
     Bound-blocked coordinates are removed from both the search metric and its
     secant update. Their gradient changes must not enter free-space curvature.
+    Optional positive inverse_update_block_size streams the same dense rank-two
+    update and its L1 uncertainty reductions over row blocks, and creates the
+    initial identity after evaluating the initial gradient. Zero retains the
+    original implementation. Neither option is limited-memory BFGS.
     """
     import jax
     import jax.numpy as jnp
+    if type(inverse_update_block_size) is not int or inverse_update_block_size < 0:
+        raise ValueError('inverse_update_block_size must be a nonnegative integer')
     if type(max_iterations) is not int or max_iterations < 0:
         raise ValueError('max_iterations must be a nonnegative integer')
     if type(max_linesearch) is not int or max_linesearch < 1:
@@ -53,8 +60,7 @@ def make_bfgs(function, *, max_iterations=1000, max_linesearch=40,
             raise ValueError('Bounds must match the initial vector shape and dtype')
         n = initial.shape[0]
         identity = jnp.eye(n, dtype=initial.dtype)
-        seed_inverse = identity if initial_inverse is None else initial_inverse
-        if seed_inverse.shape != identity.shape or seed_inverse.dtype != initial.dtype:
+        if initial_inverse is not None and (initial_inverse.shape != identity.shape or initial_inverse.dtype != initial.dtype):
             raise ValueError('Initial inverse must match the free-coordinate matrix shape and dtype')
         budget = max_iterations if iteration_budget is None else jnp.minimum(max_iterations,iteration_budget)
         valid_initial = (jnp.all(jnp.isfinite(initial)) & jnp.all(lower <= initial)
@@ -68,6 +74,13 @@ def make_bfgs(function, *, max_iterations=1000, max_linesearch=40,
             return jnp.where(blocked_coordinates(x, g), 0., g)
 
         value, gradient = vg(initial, arrays)
+        if initial_inverse is not None:
+            seed_inverse=initial_inverse
+        elif inverse_update_block_size and n:
+            from .bfgs_update import deferred_identity
+            seed_inverse=deferred_identity(gradient,block_size=inverse_update_block_size)
+        else:
+            seed_inverse=identity
         state = dict(x=initial, value=value, gradient=gradient, inverse=seed_inverse,
                      iteration=jnp.int32(0), function_evaluations=jnp.int32(1),
                      gradient_evaluations=jnp.int32(1), line_search_evaluations=jnp.int32(0),
@@ -94,13 +107,17 @@ def make_bfgs(function, *, max_iterations=1000, max_linesearch=40,
             blocked = blocked_coordinates(x, g)
             # Decouple currently blocked rows/columns; reset their diagonal so
             # a coordinate that later becomes free can move immediately.
-            metric = jnp.where(blocked[:, None] | blocked[None, :], identity, s['inverse'])
-            p = -metric @ pg
+            if inverse_update_block_size and n:
+                p = -jnp.where(blocked, 0., s['inverse'] @ pg)
+            else:
+                metric = jnp.where(blocked[:, None] | blocked[None, :], identity, s['inverse'])
+                p = -metric @ pg
             eps = 32 * jnp.finfo(initial.dtype).eps * (1 + jnp.abs(x))
             p = jnp.where(((x <= lower + eps) & (p < 0)) | ((x >= upper - eps) & (p > 0)), 0., p)
             descent = jnp.dot(g, p) < 0
             p = jnp.where(descent, p, -pg)
-            base = jnp.where(descent, metric, identity)
+            if not inverse_update_block_size or not n:
+                base = jnp.where(descent, metric, identity)
             safe = jnp.where(p != 0, p, 1.)
             bound = jnp.where(p > 0, (upper-x)/safe, jnp.where(p < 0, (lower-x)/safe, jnp.inf))
             alpha = jnp.minimum(1., jnp.min(bound, initial=jnp.inf))
@@ -131,16 +148,22 @@ def make_bfgs(function, *, max_iterations=1000, max_linesearch=40,
             ys = jnp.dot(step, change)
             adequate = (ys > 1e-18) & (ys > 1e-12*jnp.linalg.norm(step)*jnp.linalg.norm(change))
 
-            def update(_):
-                hy = base @ change
-                result = base + (ys+jnp.dot(change, hy))/(ys*ys)*jnp.outer(step, step)
-                result -= (jnp.outer(hy, step)+jnp.outer(step, hy))/ys
-                return .5*(result+result.T)
-
-            inverse = jax.lax.cond(adequate, update, lambda _: base, operand=None)
+            if inverse_update_block_size and n:
+                from .bfgs_update import blocked_bfgs_update
+                inverse, relative_change, finite_inverse = blocked_bfgs_update(
+                    s['inverse'], step, change, block_size=inverse_update_block_size,
+                    blocked=blocked, reset=~descent, update=adequate)
+            else:
+                def update(_):
+                    hy = base @ change
+                    result = base + (ys+jnp.dot(change, hy))/(ys*ys)*jnp.outer(step, step)
+                    result -= (jnp.outer(hy, step)+jnp.outer(step, hy))/ys
+                    return .5*(result+result.T)
+                inverse = jax.lax.cond(adequate, update, lambda _: base, operand=None)
+                relative_change = jnp.sum(jnp.abs(inverse-base))/jnp.maximum(jnp.sum(jnp.abs(inverse)),jnp.finfo(initial.dtype).tiny)
+                finite_inverse = jnp.all(jnp.isfinite(inverse))
             uncertainty = s['inverse_uncertainty']
             if stopping_criterion == 'edm':
-                relative_change = jnp.sum(jnp.abs(inverse-base))/jnp.maximum(jnp.sum(jnp.abs(inverse)),jnp.finfo(initial.dtype).tiny)
                 previous_uncertainty = jnp.where(descent, uncertainty, 1.)
                 uncertainty = jnp.where(adequate, .5*(previous_uncertainty+relative_change), previous_uncertainty)
             accepted = line['accepted'].astype(jnp.int32)
@@ -155,7 +178,7 @@ def make_bfgs(function, *, max_iterations=1000, max_linesearch=40,
                         roundoff_accepts=s['roundoff_accepts']+line['roundoff_used'].astype(jnp.int32),
                         maximum_roundoff_allowance=jnp.maximum(s['maximum_roundoff_allowance'],allowance),
                         line_ok=line['accepted'], finite=jnp.isfinite(newvalue)
-                        & jnp.all(jnp.isfinite(newgradient)) & jnp.all(jnp.isfinite(inverse)))
+                        & jnp.all(jnp.isfinite(newgradient)) & finite_inverse)
 
         result = jax.lax.while_loop(condition, body, state)
         status = jnp.where(~valid_initial, 4, jnp.where(~result['finite'], 3,

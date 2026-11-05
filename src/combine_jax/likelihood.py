@@ -37,6 +37,8 @@ def extended_nll(density, expected, weights):
 class Likelihood:
     def __init__(self, nodes, registry, parameters_, channels, constraints, offset=0., *,
                  profiles=(), constraint_axes=None, mask_configuration=None):
+        from .cbshape import reject_untranslated_cache_routes
+        reject_untranslated_cache_routes(nodes, [c.pdf for c in channels if not c.masked])
         self.nodes, self.registry = nodes, registry
         self.parameters = parameters_
         self.parameter_names = tuple(p.name for p in parameters_)
@@ -68,8 +70,13 @@ class Likelihood:
     def _channel_value(self, channel, theta, overrides, parameter_names):
         if channel.masked:
             return jnp.asarray(0.)
-        context = Evaluation(self.nodes, self.registry, parameter_names, theta, channel.data.coordinates, overrides)
         node = self.nodes[channel.pdf]
+        positive = np.flatnonzero(channel.data.weights > 0)
+        # The reference flags retain zero bins for RooRealSumPdf channels;
+        # CachingSimNLL removes them from extended RooAddPdf channels.
+        normalization_row = int(positive[0]) if len(positive) and node.class_name != 'RooRealSumPdf' else 0
+        context = Evaluation(self.nodes, self.registry, parameter_names, theta, channel.data.coordinates, overrides,
+                             normalization_row=normalization_row)
         expected = (context.integral(channel.pdf, channel.observables) if node.class_name == "RooRealSumPdf"
                     else sum(context.values(node.attrs["coefs"])))
         density = context.density(channel.pdf, channel.observables)
@@ -109,8 +116,9 @@ class Likelihood:
 
 
 def from_workspace(workspace, *, model="ModelConfig", data="data_obs", registry=None,
-                   analytic_barlow_beeston=True):
+                   analytic_barlow_beeston=True, validate_initial=True,profile_bounds_policy='reject'):
     from .bin_statistics import build_profiles
+    if profile_bounds_policy not in ('reject','clip'):raise ValueError('Unknown analytic-profile bounds policy')
     root = load_root()
     config = workspace.obj(model)
     dataset = workspace.data(data) if isinstance(data, str) else data
@@ -144,7 +152,7 @@ def from_workspace(workspace, *, model="ModelConfig", data="data_obs", registry=
                     raise UnsupportedModelError(f"{node.GetName()}: conditional product requires explicit lowering")
                 factor(child, shapes)
         elif not node.dependsOn(observables):
-            if node.ClassName() not in ("SimpleGaussianConstraint", "SimplePoissonConstraint", "RooGaussian", "RooPoisson"):
+            if node.ClassName() not in ("SimpleGaussianConstraint", "SimplePoissonConstraint", "RooGaussian", "RooPoisson", "RooUniform"):
                 raise UnsupportedModelError(f"{node.GetName()} ({node.ClassName()}): constraint not yet supported")
             constraints[str(node.GetName())] = node
         else:
@@ -187,6 +195,8 @@ def from_workspace(workspace, *, model="ModelConfig", data="data_obs", registry=
                 raise UnsupportedModelError(f"Extra constraint {constraint.GetName()} depends on data")
     graph_roots.extend(constraints.values())
     nodes = registry.export(graph_roots, continuous_obs)
+    from .cached_exponential import lower_cached_exponentials
+    nodes, channels, cache_routes = lower_cached_exponentials(nodes, channels)
     all_dependencies = active_dependencies(nodes, [c.pdf for c in channels]+list(constraints))
     overlap = mask_controls & all_dependencies
     if overlap:
@@ -195,14 +205,17 @@ def from_workspace(workspace, *, model="ModelConfig", data="data_obs", registry=
     parameter_info = tuple(p for p in parameter_info if p.name in active)
     constraint_axes = {
         name: tuple(sorted(names(c.getObservables(config.GetNuisanceParameters()))))
-        if c.ClassName() in ("RooGaussian", "RooPoisson") and config.GetNuisanceParameters() else ()
+        if c.ClassName() in ("RooGaussian", "RooPoisson", "RooUniform") and config.GetNuisanceParameters() else ()
         for name, c in constraints.items()
     }
-    profiles = build_profiles(nodes, registry, [c for c in channels if not c.masked], parameter_info, constraints) if analytic_barlow_beeston else ()
+    profiles = build_profiles(nodes, registry, [c for c in channels if not c.masked], parameter_info, constraints,
+                              bounds_policy=profile_bounds_policy) if analytic_barlow_beeston else ()
     profiled = {n for p in profiles for n in p.parameters}
     parameter_info = tuple(p for p in parameter_info if p.name not in profiled)
     result = Likelihood(nodes, registry, parameter_info, channels, sorted(constraints),
                         profiles=profiles, constraint_axes=constraint_axes,mask_configuration=mask_configuration)
-    # Eager construction check reports unsupported integrals before JIT/fitting.
-    result._value(jnp.asarray(result.initial))
+    result.cache_routes = cache_routes
+    # The oracle retains its eager check. Tensor import validates the lowered
+    # program instead, avoiding a full node-by-node eager evaluation first.
+    if validate_initial:result._value(jnp.asarray(result.initial))
     return result

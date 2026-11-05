@@ -32,7 +32,7 @@ def from_workspace(workspace, datacard):
     nodes = {name:(node.class_name, node.inputs, dict(node.attrs)) for name,node in exported.nodes.items()}
     observables = {name for channel in exported.channels for name in channel.observables}
     profiles = {name for profile in exported.profiles for name in profile.parameters}
-    raw = walk(workspace.obj('ModelConfig').GetPdf())
+    raw = walk(workspace.obj('ModelConfig').GetPdf(), observables=observables)
     flags = dependency_flags(nodes, exported.parameters, observables=observables, profiles=profiles)
     roots = sorted(n for n in nodes if nodes[n][0] in SCALAR_CLASSES and not any(flags[n][1:]))
     bundle = import_scalars(nodes, exported.parameters, roots,

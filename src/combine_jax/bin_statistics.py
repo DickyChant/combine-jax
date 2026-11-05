@@ -60,6 +60,8 @@ def extract_error_propagator(root):
 
 
 def geometry(node, context):
+    if node.class_name == "CMSHistSum":
+        return node.attrs
     first = context.nodes[node.attrs["functions"][0]]
     for name in node.attrs["functions"]:
         other = context.nodes[name]
@@ -73,6 +75,9 @@ def geometry(node, context):
 
 
 def error_moments(node, context):
+    if node.class_name == "CMSHistSum":
+        from .hist_sum import sum_moments
+        return sum_moments(node, context)
     key = ("error_moments", node.name)
     if key not in context.cache:
         if any(context.depends_on(name, node.attrs["observable_name"]) for name in node.attrs["coefs"]):
@@ -149,25 +154,45 @@ class BinProfile:
     widths: np.ndarray
     minimum: np.ndarray
     maximum: np.ndarray
+    bounds_policy: str = 'reject'
 
     def evaluate(self, context):
         mean, error, *_ = error_moments(context.nodes[self.propagator], context)
         indices = jnp.asarray(self.indices)
         mean, error = mean[indices]*self.widths, error[indices]*self.widths
         solution = barlow_beeston_solution(mean, error, self.observed, jnp.asarray(self.global_observed))
-        # ROOT 6.40 throws on setVal outside the range; never silently clip it.
+        # ROOT 6.30 clips setVal; ROOT 6.40 throws. The target convention must
+        # be explicit rather than inherited silently from the import process.
         # At zero error ROOT skips assignment and retains the previous profile
         # value. That history-dependent state has no stateless JAX equivalent.
+        if self.bounds_policy not in ('reject','clip'):raise ValueError('Unknown analytic-profile bounds policy')
+        if self.bounds_policy=='clip':solution=jnp.clip(solution,self.minimum,self.maximum)
         valid = (error > 0) & (solution >= self.minimum) & (solution <= self.maximum)
         solution = jnp.where(valid, solution, jnp.nan)
         return dict(zip(self.parameters, solution, strict=True))
 
 
-def build_profiles(nodes, registry, channels, parameters, constraints):
+def build_profiles(nodes, registry, channels, parameters, constraints, *, bounds_policy='reject'):
     from .registry import Evaluation
+
+    if bounds_policy not in ('reject','clip'):raise ValueError('Unknown analytic-profile bounds policy')
 
     context = Evaluation(nodes, registry, (), ())
     floating = {p.name for p in parameters}
+    constraint_names=set(constraints)
+    parents=None
+    def ancestors(variable):
+        nonlocal parents
+        if parents is None:
+            parents={}
+            for parent,node in nodes.items():
+                for child in node.inputs:parents.setdefault(child,set()).add(parent)
+        result=set();pending=[variable]
+        while pending:
+            name=pending.pop()
+            if name in result:continue
+            result.add(name);pending.extend(parents.get(name,()))
+        return result
     profiles, used = [], set()
     for channel in channels:
         shape = nodes[channel.pdf]
@@ -175,7 +200,7 @@ def build_profiles(nodes, registry, channels, parameters, constraints):
             continue
         for function in shape.attrs["functions"]:
             node = nodes[function]
-            if node.class_name != "CMSHistErrorPropagator":
+            if node.class_name not in ("CMSHistErrorPropagator", "CMSHistSum"):
                 continue
             attrs = geometry(node, context)
             indices, names, globals_ = [], [], []
@@ -187,7 +212,10 @@ def build_profiles(nodes, registry, channels, parameters, constraints):
                     raise UnsupportedModelError(f"{name}: shared analytic bin nuisance")
                 if nodes[name].class_name != "RooRealVar":
                     raise UnsupportedModelError(f"{name}: analytic bin nuisance must be a RooRealVar")
-                related = [nodes[n] for n in constraints if context.depends_on(n, name)]
+                # Walk upward once from this local bin nuisance, rather than
+                # traversing every constraint graph for every histogram bin.
+                dependent=ancestors(name)
+                related = [nodes[n] for n in sorted(constraint_names & dependent)]
                 matches = [c for c in related if c.class_name in ("RooGaussian", "SimpleGaussianConstraint")
                            and c.inputs[:2] == (name, name+"_In")]
                 if len(matches) != 1 or len(related) != 1:
@@ -196,8 +224,9 @@ def build_profiles(nodes, registry, channels, parameters, constraints):
                 gobs, sigma = nodes[constraint.inputs[1]], nodes[constraint.inputs[2]]
                 if not gobs.attrs.get("constant") or not sigma.attrs.get("constant") or sigma.attrs["value"] != 1.:
                     raise UnsupportedModelError(f"{name}: analytic profiling requires fixed global observation and unit sigma")
-                for dependency in (*node.attrs["functions"], *node.attrs["coefs"]):
-                    if context.depends_on(dependency, name):
+                shape_dependencies = node.attrs["morphs"] if node.class_name == "CMSHistSum" else node.attrs["functions"]
+                for dependency in (*shape_dependencies, *node.attrs["coefs"]):
+                    if dependency in dependent:
                         raise UnsupportedModelError(f"{name}: nuisance also affects nominal histogram prediction")
                 indices.append(i); names.append(name); globals_.append(gobs.attrs["value"])
                 used.add(name)
@@ -214,5 +243,6 @@ def build_profiles(nodes, registry, channels, parameters, constraints):
             profiles.append(BinProfile(function, tuple(indices), tuple(names), tuple(globals_),
                                        immutable_array(observed[indices]), immutable_array(np.diff(attrs["edges"])[indices]),
                                        immutable_array([nodes[n].attrs["minimum"] for n in names]),
-                                       immutable_array([nodes[n].attrs["maximum"] for n in names])))
+                                       immutable_array([nodes[n].attrs["maximum"] for n in names]),
+                                       bounds_policy=bounds_policy))
     return tuple(profiles)

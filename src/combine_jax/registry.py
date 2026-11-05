@@ -8,7 +8,7 @@ import jax
 jax.config.update("jax_enable_x64", True)
 import jax.numpy as jnp
 
-from .graph import UnsupportedModelError, walk
+from .graph import UnsupportedModelError, walk_roots
 
 
 @dataclass(frozen=True)
@@ -38,14 +38,8 @@ class Registry:
         self.translators[class_name] = Translator(extract, value, integral, density, log_value)
 
     def export(self, roots, observables=()):
-        import ROOT
-
-        root_nodes = {}
-        for root in roots:
-            for name, node in walk(root).items():
-                if name in root_nodes and ROOT.addressof(root_nodes[name]) != ROOT.addressof(node):
-                    raise ValueError(f"Distinct graph nodes share the name {name!r}")
-                root_nodes[name] = node
+        observables = set(observables)
+        root_nodes = walk_roots(roots, observables=observables)
         unsupported = {}
         for name, node in root_nodes.items():
             if node.ClassName() not in self.translators:
@@ -69,12 +63,13 @@ class Registry:
 class Evaluation:
     """One trace/evaluation; memoisation is scoped to this parameter/data binding."""
 
-    def __init__(self, nodes, registry, parameter_names, theta, data=None, overrides=None):
+    def __init__(self, nodes, registry, parameter_names, theta, data=None, overrides=None, *, normalization_row=0):
         self.nodes = nodes
         self.registry = registry
         self.parameters = dict(zip(parameter_names, theta, strict=True))
         self.parameters.update(overrides or {})
         self.data = data if data is not None else {}
+        self.normalization_row = normalization_row
         self.cache = {}
 
     def value(self, name):

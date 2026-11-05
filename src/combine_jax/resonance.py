@@ -16,6 +16,7 @@ def resonance_access():
     if not root.gInterpreter.Declare(r'''
       #include "HiggsAnalysis/CombinedLimit/interface/HZZ2L2QRooPdfs.h"
       #include "HiggsAnalysis/CombinedLimit/interface/HWWLVJRooPdfs.h"
+      #include "HiggsAnalysis/CombinedLimit/interface/RooDoubleCBFast.h"
       namespace combine_jax_io {
       class DoubleCBAccess : public RooDoubleCB {
       public:
@@ -34,10 +35,37 @@ def resonance_access():
           return {x.arg().GetName(), c.arg().GetName(), offset.arg().GetName(), width.arg().GetName()};
         }
       };
+      class DoubleCBFastAccess : public RooDoubleCBFast {
+      public:
+        DoubleCBFastAccess(RooDoubleCBFast const& p) : RooDoubleCBFast(p, "combine_jax_doublecbfast") {}
+        std::vector<std::string> fields() const {
+          return {x.arg().GetName(), mean.arg().GetName(), width.arg().GetName(),
+                  alpha1.arg().GetName(), n1.arg().GetName(), alpha2.arg().GetName(), n2.arg().GetName()};
+        }
+      };
       }
     '''):
         raise RuntimeError("Cannot compile resonance PDF extraction helpers")
     return root.combine_jax_io
+
+
+def extract_doublecb_fast(root):
+    if root.getForceNumInt() or root.normRange():
+        raise UnsupportedModelError('DoubleCBFast forced numerical or named-range normalization')
+    fields = tuple(str(n) for n in resonance_access().DoubleCBFastAccess(root).fields())
+    return fields, {}
+
+
+def doublecb_fast_value(node, context):
+    from .crystalball_fast_math import value
+    return value(*context.values(node.inputs), jnp)
+
+
+def doublecb_fast_integral(node, context, axes):
+    from .crystalball_fast_math import integral
+    if axes != (node.inputs[0],) or any(context.depends_on(n, axes[0]) for n in node.inputs[1:]):
+        raise UnsupportedModelError(f'{node.name}: DoubleCBFast requires a direct observable and independent shape parameters')
+    return integral(*context.bounds(axes[0]), *context.values(node.inputs[1:]), jnp, erf)
 
 
 def extract_doublecb(root):

@@ -6,7 +6,7 @@ import subprocess
 from combine_jax.root_io import load_root
 
 
-def build_template_fixture(directory, *, threshold=10):
+def build_template_fixture(directory, *, threshold=10, use_hist_sum=False):
     root = load_root()
     directory = Path(directory).resolve()
     directory.mkdir(parents=True, exist_ok=True)
@@ -50,7 +50,10 @@ shape shape 1 1
 ch autoMCStats {threshold} 1 1
 """)
     workspace = directory / "workspace.root"
-    run = subprocess.run(["text2workspace.py", str(card), "-o", str(workspace)],
+    run = subprocess.run(["text2workspace.py", str(card), "-o", str(workspace)]
+                         # The pip build lacks the CMSHistSum wrapper overload.
+                         # Wrappers are saved auxiliaries, not likelihood nodes.
+                         + (["--use-histsum", "--no-wrappers"] if use_hist_sum else []),
                          cwd=directory, capture_output=True, text=True)
     (directory / "text2workspace.log").write_text(run.stdout + run.stderr)
     run.check_returncode()

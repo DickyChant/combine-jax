@@ -115,9 +115,10 @@ def test_failed_fit_optional_covariance_and_all_fixed():
     assert bad['status']==3 and bad['covariance_status']==1 and np.isnan(bad['covariance']).all()
 
 
+@pytest.mark.parametrize('inverse_block',[0,2])
 @pytest.mark.parametrize('kind',['counting','automcstats'])
 @pytest.mark.parametrize('linearization',['reuse','recompute'])
-def test_device_fit_uncertainties_and_profiles_against_native(counting_path,template_path,tmp_path,monkeypatch,kind,linearization):
+def test_device_fit_uncertainties_and_profiles_against_native(counting_path,template_path,tmp_path,monkeypatch,kind,linearization,inverse_block):
     root=load_caching_nll();path=counting_path if kind=='counting' else template_path
     card=Path(__file__).parent/'cards/counting.txt' if kind=='counting' else Path(path).parent/'card.txt'
     with open_workspace(path) as workspace:
@@ -145,7 +146,7 @@ def test_device_fit_uncertainties_and_profiles_against_native(counting_path,temp
         for p in oracle.parameters:
             reference.limits[p.name]=(p.minimum,p.maximum);reference.errors[p.name]=p.error if p.error>0 else .1
         reference.migrad();reference.hesse();assert reference.valid and reference.fmin.has_accurate_covar
-        compiled,c,a=prepare_fit(model,gradient_tolerance=1e-7,curvature_linearization=linearization)
+        compiled,c,a=prepare_fit(model,gradient_tolerance=1e-7,curvature_linearization=linearization,inverse_update_block_size=inverse_block)
         result=jax.device_get(compiled(c,a));assert result['status']==0 and result['covariance_status']==0
         values=np.array(reference.values);errors=np.array(reference.errors);cov=np.array(reference.covariance)
         value_diff=np.abs(result['values']-values);value_tol=np.maximum(.01*np.abs(values),.01*errors)
@@ -158,7 +159,7 @@ def test_device_fit_uncertainties_and_profiles_against_native(counting_path,temp
         # Compare exact tensor curvature with the retained graph oracle at the fit.
         old_hessian=np.asarray(oracle.hessian(result['values']))
         np.testing.assert_allclose(result['hessian'],old_hessian,rtol=1e-9,atol=1e-9)
-        summary=dict(kind=kind,reference='Combine v11 CachingSimNLL, native objective minimized by iminuit',
+        summary=dict(kind=kind,inverse_update_block_size=inverse_block,reference='Combine v11 CachingSimNLL, native objective minimized by iminuit',
             names=list(oracle.parameter_names),device_values=result['values'].tolist(),native_values=values.tolist(),
             device_errors=result['errors'].tolist(),native_errors=errors.tolist(),device_nll=float(result['value']),
             device_reported_errors=result['reported_errors'].tolist(),
@@ -174,7 +175,7 @@ def test_device_fit_uncertainties_and_profiles_against_native(counting_path,temp
         for endpoint in result['values'][index]+np.array([-.7,.7])*result['errors'][index]:
             assert info.arrays['lower'][index]<endpoint<info.arrays['upper'][index]
             profile_fn,pc,pa=prepare_fit(model,initial=result['values'],fixed={'r':float(endpoint)},
-                gradient_tolerance=1e-7,curvature_linearization=linearization)
+                gradient_tolerance=1e-7,curvature_linearization=linearization,inverse_update_block_size=inverse_block)
             prof=jax.device_get(profile_fn(pc,pa))
             assert prof['status']==0 and prof['covariance_status']==0
             assert np.all(prof['covariance'][index]==0.)

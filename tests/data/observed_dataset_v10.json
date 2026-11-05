@@ -1,0 +1,499 @@
+{
+  "dataset": "data_obs",
+  "analysis": "synthetic",
+  "root_version": "6.30/07",
+  "runtime_defines": {
+    "ADDNLL_RECURSIVE": 1,
+    "ADDNLL_GAUSSNLL": 1,
+    "ADDNLL_HISTNLL": 1,
+    "ADDNLL_CBNLL": 1,
+    "ADDNLL_ROOREALSUM_FACTOR": 1,
+    "ADDNLL_ROOREALSUM_NONORM": 1,
+    "ADDNLL_ROOREALSUM_BASICINT": 1,
+    "ADDNLL_ROOREALSUM_KEEPZEROS": 1,
+    "ADDNLL_PRODNLL": 1,
+    "ADDNLL_HFNLL": 1,
+    "ADDNLL_HISTFUNCNLL": 1,
+    "ADDNLL_ROOREALSUM_CHEAPPROD": 1
+  },
+  "library_sha256": "67f68da995aac0eea6c945b83fb406dd3fce66f8f740f371b9e8ead360f37ec0",
+  "cases": [
+    {
+      "fixture": {
+        "kind": "unweighted_unbinned",
+        "rows": [
+          {
+            "channel": "unbinned",
+            "x": 0.07,
+            "weight": 1.0
+          },
+          {
+            "channel": "unbinned",
+            "x": 0.42,
+            "weight": 1.0
+          },
+          {
+            "channel": "unbinned",
+            "x": 0.9,
+            "weight": 1.0
+          },
+          {
+            "channel": "unbinned",
+            "x": 1.21,
+            "weight": 1.0
+          },
+          {
+            "channel": "unbinned",
+            "x": 2.14,
+            "weight": 1.0
+          },
+          {
+            "channel": "unbinned",
+            "x": 2.98,
+            "weight": 1.0
+          },
+          {
+            "channel": "unbinned",
+            "x": 3.8,
+            "weight": 1.0
+          }
+        ],
+        "entries": 7,
+        "sum_weights": 7.0,
+        "data_class": "RooDataSet",
+        "is_weighted": false
+      },
+      "parameter_names": [
+        "mu",
+        "theta"
+      ],
+      "fd_step": 0.001,
+      "points": [
+        {
+          "point": [
+            1.0,
+            0.0
+          ],
+          "nll": 11.84732010882962,
+          "gradient": [
+            2.9166666666671226,
+            1.6550000000320846
+          ],
+          "hessian": [
+            [
+              2.3819444476084564,
+              0.7729166672120077
+            ],
+            [
+              0.7729166672120077,
+              3.373270871668647
+            ]
+          ],
+          "hessian_mixed_order": 4,
+          "hessian_cross_half_step": 0.7729166586756264,
+          "hessian_cross_order2": 0.772916831426329
+        },
+        {
+          "point": [
+            0.7,
+            -0.4
+          ],
+          "nll": 10.761167121494399,
+          "gradient": [
+            1.8552702104506953,
+            0.27267229722334935
+          ],
+          "hessian": [
+            [
+              3.9977776629858868,
+              -0.09901343684454782
+            ],
+            [
+              -0.09901343684454782,
+              2.734236044688032
+            ]
+          ],
+          "hessian_mixed_order": 4,
+          "hessian_cross_half_step": -0.09901343759703232,
+          "hessian_cross_order2": -0.09901198527728639
+        },
+        {
+          "point": [
+            1.4,
+            0.6
+          ],
+          "nll": 14.883952726860542,
+          "gradient": [
+            4.329275970860931,
+            3.3178823976589555
+          ],
+          "hessian": [
+            [
+              1.1268175672540792,
+              1.4426779976329915
+            ],
+            [
+              1.4426779976329915,
+              0.048863459648866105
+            ]
+          ],
+          "hessian_mixed_order": 4,
+          "hessian_cross_half_step": 1.4426779934634877,
+          "hessian_cross_order2": 1.4426772714237757
+        }
+      ]
+    },
+    {
+      "fixture": {
+        "kind": "weighted_binned",
+        "rows": [
+          {
+            "channel": "binned",
+            "x": 0.5,
+            "weight": 3.5
+          },
+          {
+            "channel": "binned",
+            "x": 1.5,
+            "weight": 2.25
+          },
+          {
+            "channel": "binned",
+            "x": 3.0,
+            "weight": 7.25
+          }
+        ],
+        "entries": 3,
+        "sum_weights": 13.0,
+        "data_class": "RooDataHist",
+        "is_weighted": true
+      },
+      "parameter_names": [
+        "mu",
+        "theta"
+      ],
+      "fd_step": 0.001,
+      "points": [
+        {
+          "point": [
+            1.0,
+            0.0
+          ],
+          "nll": 21.30986547728082,
+          "gradient": [
+            0.3790895426449836,
+            -0.13790895425991323
+          ],
+          "hessian": [
+            [
+              3.5971159692375445,
+              0.3023794500468647
+            ],
+            [
+              0.3023794500468647,
+              1.0197620656053157
+            ]
+          ],
+          "hessian_mixed_order": 4,
+          "hessian_cross_half_step": 0.30237944799912003,
+          "hessian_cross_order2": 0.30237952675093993
+        },
+        {
+          "point": [
+            0.7,
+            -0.4
+          ],
+          "nll": 21.55965697125007,
+          "gradient": [
+            -1.1034260796281004,
+            -0.652365454852403
+          ],
+          "hessian": [
+            [
+              5.562676898070625,
+              0.42095522504818433
+            ],
+            [
+              0.42095522504818433,
+              1.0185726049272148
+            ]
+          ],
+          "hessian_mixed_order": 4,
+          "hessian_cross_half_step": 0.4209552285022116,
+          "hessian_cross_order2": 0.4209553958745005
+        },
+        {
+          "point": [
+            1.4,
+            0.6
+          ],
+          "nll": 21.87312361805875,
+          "gradient": [
+            1.6755210229799644,
+            0.5763453300546099
+          ],
+          "hessian": [
+            [
+              2.278564671165384,
+              0.21344884494468705
+            ],
+            [
+              0.21344884494468705,
+              1.0232089930894972
+            ]
+          ],
+          "hessian_mixed_order": 4,
+          "hessian_cross_half_step": 0.2134488638184785,
+          "hessian_cross_order2": 0.21344887901619813
+        }
+      ]
+    },
+    {
+      "fixture": {
+        "kind": "empty_bins",
+        "rows": [
+          {
+            "channel": "binned",
+            "x": 0.5,
+            "weight": 3.5
+          },
+          {
+            "channel": "binned",
+            "x": 1.5,
+            "weight": 0.0
+          },
+          {
+            "channel": "binned",
+            "x": 3.0,
+            "weight": 7.25
+          }
+        ],
+        "entries": 3,
+        "sum_weights": 10.75,
+        "data_class": "RooDataHist",
+        "is_weighted": true
+      },
+      "parameter_names": [
+        "mu",
+        "theta"
+      ],
+      "fd_step": 0.001,
+      "points": [
+        {
+          "point": [
+            1.0,
+            0.0
+          ],
+          "nll": 19.084014873524215,
+          "gradient": [
+            2.1651720168689437,
+            -0.09151720168443234
+          ],
+          "hessian": [
+            [
+              2.1792979163492987,
+              0.26555300462286857
+            ],
+            [
+              0.26555300462286857,
+              1.0234447040957662
+            ]
+          ],
+          "hessian_mixed_order": 4,
+          "hessian_cross_half_step": 0.2655530038827199,
+          "hessian_cross_order2": 0.2655530595419009
+        },
+        {
+          "point": [
+            0.7,
+            -0.4
+          ],
+          "nll": 18.69780641344061,
+          "gradient": [
+            1.266103168208706,
+            -0.5932325021964502
+          ],
+          "hessian": [
+            [
+              3.067268520950961,
+              0.3586808849931344
+            ],
+            [
+              0.3586808849931344,
+              1.0229318154012883
+            ]
+          ],
+          "hessian_mixed_order": 4,
+          "hessian_cross_half_step": 0.358680884104956,
+          "hessian_cross_order2": 0.3586809871336527
+        },
+        {
+          "point": [
+            1.4,
+            0.6
+          ],
+          "nll": 20.28939178706339,
+          "gradient": [
+            3.0181619807108837,
+            0.6133755959748891
+          ],
+          "hessian": [
+            [
+              1.4773714503609388,
+              0.19135179988675566
+            ],
+            [
+              0.19135179988675566,
+              1.0263025848426348
+            ]
+          ],
+          "hessian_mixed_order": 4,
+          "hessian_cross_half_step": 0.19135181133438867,
+          "hessian_cross_order2": 0.19135182593998934
+        }
+      ]
+    },
+    {
+      "fixture": {
+        "kind": "mixed",
+        "rows": [
+          {
+            "channel": "unbinned",
+            "x": 0.07,
+            "weight": 1.0
+          },
+          {
+            "channel": "unbinned",
+            "x": 0.42,
+            "weight": 1.0
+          },
+          {
+            "channel": "unbinned",
+            "x": 0.9,
+            "weight": 1.0
+          },
+          {
+            "channel": "unbinned",
+            "x": 1.21,
+            "weight": 1.0
+          },
+          {
+            "channel": "unbinned",
+            "x": 2.14,
+            "weight": 1.0
+          },
+          {
+            "channel": "unbinned",
+            "x": 2.98,
+            "weight": 1.0
+          },
+          {
+            "channel": "unbinned",
+            "x": 3.8,
+            "weight": 1.0
+          },
+          {
+            "channel": "binned",
+            "x": 0.5,
+            "weight": 3.5
+          },
+          {
+            "channel": "binned",
+            "x": 1.5,
+            "weight": 0.0
+          },
+          {
+            "channel": "binned",
+            "x": 3.0,
+            "weight": 7.25
+          }
+        ],
+        "entries": 10,
+        "sum_weights": 17.75,
+        "data_class": "RooDataSet",
+        "is_weighted": true
+      },
+      "parameter_names": [
+        "mu",
+        "theta"
+      ],
+      "fd_step": 0.001,
+      "points": [
+        {
+          "point": [
+            1.0,
+            0.0
+          ],
+          "nll": 30.015099896234638,
+          "gradient": [
+            5.081838683535918,
+            1.5634827983464679
+          ],
+          "hessian": [
+            [
+              4.56124236129322,
+              1.0384696725256817
+            ],
+            [
+              1.0384696725256817,
+              3.3967155781411407
+            ]
+          ],
+          "hessian_mixed_order": 4,
+          "hessian_cross_half_step": 1.0384696583148272,
+          "hessian_cross_order2": 1.0384698914123192
+        },
+        {
+          "point": [
+            0.7,
+            -0.4
+          ],
+          "nll": 28.462738448815813,
+          "gradient": [
+            3.1213733786602895,
+            0.07943979502596694
+          ],
+          "hessian": [
+            [
+              7.065046180088075,
+              0.2596674467546399
+            ],
+            [
+              0.2596674467546399,
+              2.7571678498835204
+            ]
+          ],
+          "hessian_mixed_order": 4,
+          "hessian_cross_half_step": 0.25966745405744024,
+          "hessian_cross_order2": 0.2596690018563663
+        },
+        {
+          "point": [
+            1.4,
+            0.6
+          ],
+          "nll": 34.077109427804736,
+          "gradient": [
+            7.347437951568854,
+            3.3312579936370192
+          ],
+          "hessian": [
+            [
+              2.60418901672684,
+              1.6340297967549269
+            ],
+            [
+              1.6340297967549269,
+              0.07516604050294973
+            ]
+          ],
+          "hessian_mixed_order": 4,
+          "hessian_cross_half_step": 1.6340298161468227,
+          "hessian_cross_order2": 1.6340290969196758
+        }
+      ]
+    }
+  ],
+  "status": "native_reference_ready",
+  "wall_s": 13.540136316791177
+}

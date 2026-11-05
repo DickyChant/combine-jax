@@ -129,6 +129,8 @@ def make_torch_function(model):
         binned_fields = {key: tuple(value.arrays) for key, value in parts.items()}
         histogram_schedule = tuple(parts['histograms'].metadata['schedule'])
         density_schedule = tuple(components['binned'].metadata['program'])
+        if any(batch['operation'].startswith('numeric_') for batch in density_schedule):
+            raise UnsupportedModelError('Native numerical shape integration is not yet translated to PyTorch')
         nll_schedule = tuple(components['binned'].metadata['nll_program'])
     for batch in schedules['constraints']:
         if batch['normalization'] == 'poisson_mean' and batch['observation_dynamic']:
@@ -201,7 +203,8 @@ def make_torch_function(model):
             histograms = a['histogram_values']
             for batch in schedules['templates'][:-1]:
                 b = {key: a[name] for key, name in batch['buffers'].items()}
-                updates = morph_batch(batch['mode'], values[a[batch['inputs']]], b, xp)
+                updates = morph_batch(batch['mode'], values[a[batch['inputs']]], b, xp,
+                    segment_sum=lambda v,i,n:torch.index_add(v.new_zeros(n),0,i,v))
                 histograms = put(histograms, a[batch['outputs']], updates)
             terms, profiles, _ = template_terms(histograms, values, a, xp)
             result = result+terms.sum()

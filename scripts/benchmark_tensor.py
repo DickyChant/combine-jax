@@ -13,6 +13,9 @@ from tensor_benchmark_common import Resources, provenance, save_json, sha
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--model', type=Path, required=True)
+    parser.add_argument('--dataset', help='Require this exact dataset in the imported model')
+    parser.add_argument('--analysis', choices=('hig23006','hhvv','blind','synthetic'))
+    parser.add_argument('--dataset-kind', choices=('asimov','observed'))
     parser.add_argument('--points', type=Path, help='NPZ with points and parameter_names, in model order')
     parser.add_argument('--backend', choices=('cpu', 'gpu'), required=True)
     parser.add_argument('--mode', choices=('jit', 'eager'), default='jit')
@@ -41,6 +44,10 @@ def main():
     parser.add_argument('--fit-edm-validation', choices=('exact_hessian','estimated'),default='exact_hessian')
     parser.add_argument('--fit-covariance', choices=('full', 'none'), default='full',
                         help='Full exact final curvature or gradient-only fit with uncertainties deferred')
+    parser.add_argument('--fit-matrix-output', choices=('full', 'none'), default='full',
+                        help='Retain or omit Hessian/covariance result matrices; calculation and convergence are unchanged')
+    parser.add_argument('--fit-inverse-update-block-size', type=int, default=0,
+                        help='Rows per dense BFGS update block; zero retains the original update')
     parser.add_argument('--compile-only', action='store_true',
                         help='Record compilation and static memory only; never execute the objective or fit')
     parser.add_argument('--fit-uncertainty-note',default='')
@@ -49,6 +56,8 @@ def main():
                         help='Static compiler allocation guard; CPU maximum 8 GiB, GPU maximum 80%% of measured initial free memory')
     parser.add_argument('--output', type=Path, required=True)
     args = parser.parse_args()
+    if args.fit_inverse_update_block_size < 0 or (args.fit_inverse_update_block_size and args.operation != 'fit'):
+        parser.error('--fit-inverse-update-block-size must be nonnegative and applies only to fit operations')
     if args.operation == 'limit':
         if not args.poi:
             parser.error('--operation limit requires --poi')
@@ -72,6 +81,8 @@ def main():
         parser.error('--compile-only requires jit mode')
     if args.fit_covariance != 'full' and args.operation != 'fit':
         parser.error('--fit-covariance none applies only to fit operations')
+    if args.fit_matrix_output != 'full' and args.operation != 'fit':
+        parser.error('--fit-matrix-output none applies only to fit operations')
     if args.operation == 'fit' and args.fit_covariance == 'none' and args.fit_stopping_criterion == 'edm' and args.fit_edm_validation != 'estimated':
         parser.error('Gradient-only EDM fits require --fit-edm-validation estimated; no exact curvature is computed')
     if args.single_fit and args.operation!='fit':
@@ -149,6 +160,14 @@ def main():
         model = TensorBundle.load(args.model)
         from tensor_benchmark_dataset import require_blind_model
         require_blind_model(model)
+        imported_dataset=model.metadata.get('provenance',{}).get('dataset',{})
+        report['dataset']=imported_dataset
+        if args.dataset is not None and imported_dataset.get('name')!=args.dataset:
+            raise ValueError('Requested and imported datasets differ')
+        if args.analysis is not None or args.dataset_kind is not None:
+            from combine_jax.datasets import dataset_selection
+            report['dataset_selection']=dataset_selection(imported_dataset.get('name'),
+                analysis=args.analysis,kind=args.dataset_kind,parameter_names=model.metadata['parameter_names'])
         info = model_parameter_info(model)
         names = model.metadata['parameter_names']
         points = np.array([info.arrays['initial']])
@@ -210,11 +229,15 @@ def main():
             coordinates = jax.device_put({n: coordinates[n] for n in COORDINATE_FIELDS})
             function = make_fit_function(function, column_batch_size=args.batch_size, gradient_tolerance=1e-7,
                                          covariance=args.fit_covariance=='full',
+                                         return_matrices=args.fit_matrix_output=='full',
+                                         inverse_update_block_size=args.fit_inverse_update_block_size,
                                          max_iterations=args.fit_max_iterations,
                                          stopping_criterion=args.fit_stopping_criterion,
                                          edm_tolerance=args.fit_edm_tolerance,edm_validation=args.fit_edm_validation)
             call_inputs = [(coordinates, arrays)]
             report['fit_options'] = dict(gradient_tolerance=1e-7, max_iterations=args.fit_max_iterations,
+                matrix_output=args.fit_matrix_output,
+                inverse_update_block_size=args.fit_inverse_update_block_size,
                 stopping_criterion=args.fit_stopping_criterion, edm_tolerance=args.fit_edm_tolerance,
                 edm_validation=args.fit_edm_validation,uncertainty_note=args.fit_uncertainty_note,
                 edm_estimator='BFGS EDM times (1+3*inverse_uncertainty), followed by exact-Hessian EDM verification/refinement when curvature is valid; no certificate for invalid curvature',

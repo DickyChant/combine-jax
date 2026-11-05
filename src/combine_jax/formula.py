@@ -13,6 +13,7 @@ import jax.numpy as jnp
 from jax.scipy.special import erf, erfc
 
 from .graph import UnsupportedModelError
+from .landau_math import value as landau_value
 
 
 FUNCTIONS = {
@@ -21,10 +22,11 @@ FUNCTIONS = {
     "sin": (1, jnp.sin), "cos": (1, jnp.cos), "tan": (1, jnp.tan),
     "tanh": (1, jnp.tanh), "erf": (1, erf), "erfc": (1, erfc),
     "pow": (2, jnp.power), "min": (2, jnp.minimum), "max": (2, jnp.maximum),
+    "landau": (3, lambda x,mean,sigma: landau_value(x,mean,sigma,jnp)),
 }
 ALIASES = {"Abs": "abs", "Sqrt": "sqrt", "Exp": "exp", "Log": "log", "Log10": "log10",
            "Sin": "sin", "Cos": "cos", "Tan": "tan", "TanH": "tanh", "Erf": "erf", "Erfc": "erfc",
-           "Power": "pow", "Min": "min", "Max": "max"}
+           "Power": "pow", "Min": "min", "Max": "max", "Landau": "landau"}
 BINARY = {ast.Add: ("+", operator.add), ast.Sub: ("-", operator.sub), ast.Mult: ("*", operator.mul),
           ast.Div: ("/", operator.truediv), ast.Pow: ("**", operator.pow)}
 COMPARE = {ast.Lt: ("<", operator.lt), ast.LtE: ("<=", operator.le), ast.Gt: (">", operator.gt),

@@ -164,7 +164,7 @@ def evaluate_model_numpy(model,theta):
     return np.sum(constraints)+np.sum(channels)+template_sum+model.arrays['offset']
 
 
-def from_workspace(workspace,datacard=None,*,data='data_obs',analytic_barlow_beeston=True,compact_shape_data=True,fit_policy='workspace',template_convention='v10_density',discrete_policy='fixed'):
+def from_workspace(workspace,datacard=None,*,data='data_obs',analytic_barlow_beeston=True,compact_shape_data=True,compact_density_storage=True,fit_policy='workspace',template_convention='v10_density',discrete_policy='fixed',cbshape_convention='native',profile_bounds_policy='reject',analysis=None,dataset_kind=None):
     """Complete supported workspace+card import; other shapes fail by name.
 
     Existing extraction is reused once at the boundary, including exact native
@@ -172,15 +172,22 @@ def from_workspace(workspace,datacard=None,*,data='data_obs',analytic_barlow_bee
     ``fit_policy='combine_v11_default'`` applies native effective nuisance ranges
     before extraction and preserves the workspace's mass. The legacy default
     retains the supplied workspace ranges for existing oracle comparisons.
+    Density slots no longer referenced after folding are removed by default;
+    ``compact_density_storage=False`` retains the original storage layout for
+    regression comparisons. Neither setting changes floating values or nodes.
     """
     if discrete_policy not in ('fixed','profile'):
         raise ValueError('Unknown discrete import policy')
+    if profile_bounds_policy not in ('reject','clip'):raise ValueError('Unknown analytic-profile bounds policy')
+    if type(compact_density_storage) is not bool:raise ValueError('Density storage compaction must be boolean')
     if fit_policy!='workspace':
         from .fit_policy import POLICY,combine_v11_fit_context,attach_fit_policy
         if fit_policy!=POLICY:raise ValueError(f'Unsupported fit policy: {fit_policy}')
         with combine_v11_fit_context(workspace) as (state,ranges):
             model=from_workspace(workspace,datacard,data=data,analytic_barlow_beeston=analytic_barlow_beeston,
-                compact_shape_data=compact_shape_data,template_convention=template_convention,discrete_policy=discrete_policy)
+                compact_shape_data=compact_shape_data,compact_density_storage=compact_density_storage,
+                template_convention=template_convention,discrete_policy=discrete_policy,
+                cbshape_convention=cbshape_convention,profile_bounds_policy=profile_bounds_policy)
         return attach_fit_policy(model,state,ranges)
     from optparse import OptionParser
     from pathlib import Path
@@ -196,9 +203,15 @@ def from_workspace(workspace,datacard=None,*,data='data_obs',analytic_barlow_bee
     card=None
     if datacard is not None:
         with datacard.open() as stream:card=parseCard(stream,options)
+    selection = None
+    if analysis is not None or dataset_kind is not None:
+        from ..datasets import dataset_selection
+        selection = dataset_selection(data, analysis=analysis, kind=dataset_kind,
+                                      parameter_names=[str(v.GetName()) for v in workspace.allVars()])
     from ..translators import default_registry
     exported=oracle_export(workspace,data=data,analytic_barlow_beeston=analytic_barlow_beeston,
-        registry=default_registry(template_convention=template_convention,profile_multipdf=discrete_policy=='profile'))
+        registry=default_registry(template_convention=template_convention,profile_multipdf=discrete_policy=='profile',
+            cbshape_convention=cbshape_convention),validate_initial=False,profile_bounds_policy=profile_bounds_policy)
     if card is not None and set(card.bins) != {c.name for c in exported.channels}:
         raise ValueError('Datacard/workspace channel sets differ')
     nodes={n:(v.class_name,v.inputs,dict(v.attrs)) for n,v in exported.nodes.items()}
@@ -206,7 +219,7 @@ def from_workspace(workspace,datacard=None,*,data='data_obs',analytic_barlow_bee
     profiles=sorted(n for p in exported.profiles for n in p.parameters)
     flags=dependency_flags(nodes,exported.parameters,observables=observables,profiles=profiles)
     roots=sorted(n for n in nodes if nodes[n][0] in SCALAR_CLASSES and not any(flags[n][1:]))
-    raw=walk(workspace.obj('ModelConfig').GetPdf())
+    raw=walk(workspace.obj('ModelConfig').GetPdf(),observables=observables)
     scalars=import_scalars(nodes,exported.parameters,roots,fixed_value=lambda n:float(raw[n].getVal()),
         observables=observables,profiles=profiles)
     root=load_root()
@@ -231,14 +244,21 @@ def from_workspace(workspace,datacard=None,*,data='data_obs',analytic_barlow_bee
             workspace_name=str(workspace.GetName()),all_card_channels_imported=True if card is not None else None,
             channel_source='workspace_modelconfig' if card is None else 'workspace_and_datacard',
             template_convention=template_convention,
+            cbshape_convention=cbshape_convention,
+            profile_bounds_policy=profile_bounds_policy,
+            native_cache_routes=list(exported.cache_routes),
             discrete_choices=exported.discrete_choices,channel_masks=exported.mask_configuration)
     from ..dataset_identity import binding_identity
     provenance['dataset']=dict(name=data,identity=binding_identity({c.name:c.data for c in exported.channels}))
+    if selection is not None: provenance['dataset_selection'] = selection
     from .templates import pack_templates
     templates=pack_templates(nodes,template_rows,scalars,profiles=exported.profiles) if template_rows else None
     if binned_rows:
         from .binned_channels import pack_binned_channels
         binned=pack_binned_channels(nodes,binned_rows,scalars,compact_data=compact_shape_data)
+        if compact_density_storage:
+            from .density_compaction import compact_density_storage as compact_binned_storage
+            binned=compact_binned_storage(binned)
         model=compose_binned(scalars,constraints,channels,binned,templates=templates,offset=exported.offset,provenance=provenance)
     elif templates is not None:
         model=compose_templates(scalars,constraints,channels,templates,offset=exported.offset,provenance=provenance)
@@ -248,5 +268,9 @@ def from_workspace(workspace,datacard=None,*,data='data_obs',analytic_barlow_bee
         from .discrete import attach_discrete_profile
         model=attach_discrete_profile(model,nodes,rows,scalars,
             constraint_names=exported.constraints,compact_data=compact_shape_data)
+    # Evaluate the complete lowered initial objective without building an eager
+    # JAX operation graph for every RooFit node. Nonfinite initial values remain
+    # diagnostic values, as in the original oracle construction check.
+    evaluate_model_numpy(model,exported.initial)
     from .parameter_info import attach_parameter_info,pack_parameter_info
     return attach_parameter_info(model,pack_parameter_info(exported.parameters))
