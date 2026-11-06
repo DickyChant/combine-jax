@@ -9,7 +9,8 @@ OPTIMIZER_STATUS = {0: 'converged', 1: 'iteration_limit', 2: 'line_search_failed
 def make_bfgs(function, *, max_iterations=1000, max_linesearch=40,
               gradient_tolerance=1e-6,armijo_roundoff_multiplier=8.,
               stopping_criterion='projected_gradient', edm_tolerance=1e-4,
-              inverse_update_block_size=0, inverse_transpose_gather=False, rescale_small_secants=False):
+              inverse_update_block_size=0, inverse_transpose_gather=False, rescale_small_secants=False,
+              progress_every=0):
     """Return a JIT-compatible minimizer in caller-scaled free coordinates.
 
     Convergence uses the box-projected gradient by default. Optional ``edm``
@@ -39,6 +40,10 @@ def make_bfgs(function, *, max_iterations=1000, max_linesearch=40,
     preventing all updates at an already-near-stationary restart. Positive
     curvature, the relative angle check, and the requirement for an actual
     update before EDM acceptance remain enforced. Default behavior is unchanged.
+    Positive ``progress_every`` sends a small record (iteration, NLL, EDM
+    estimate) to the host every that many iterations and once at the end,
+    through ``progress.emit``. Zero, the default, adds no callback.
+    The record is read-only: it never changes the fit.
     """
     import jax
     import jax.numpy as jnp
@@ -48,6 +53,8 @@ def make_bfgs(function, *, max_iterations=1000, max_linesearch=40,
         raise ValueError('rescale_small_secants must be boolean')
     if type(inverse_update_block_size) is not int or inverse_update_block_size < 0:
         raise ValueError('inverse_update_block_size must be a nonnegative integer')
+    if type(progress_every) is not int or progress_every < 0:
+        raise ValueError('progress_every must be a nonnegative integer')
     if type(max_iterations) is not int or max_iterations < 0:
         raise ValueError('max_iterations must be a nonnegative integer')
     if type(max_linesearch) is not int or max_linesearch < 1:
@@ -63,7 +70,7 @@ def make_bfgs(function, *, max_iterations=1000, max_linesearch=40,
     vg = jax.value_and_grad(function)
 
     def optimize(initial, arrays, lower, upper, initial_inverse=None,
-                 initial_inverse_uncertainty=1., iteration_budget=None):
+                 initial_inverse_uncertainty=1., iteration_budget=None, progress_offset=0):
         if initial.ndim != 1 or initial.dtype != jnp.float64:
             raise ValueError('Optimization requires a one-dimensional float64 vector')
         if any(b.shape != initial.shape or b.dtype != initial.dtype for b in (lower, upper)):
@@ -202,9 +209,39 @@ def make_bfgs(function, *, max_iterations=1000, max_linesearch=40,
                         line_ok=line['accepted'], finite=jnp.isfinite(newvalue)
                         & jnp.all(jnp.isfinite(newgradient)) & finite_inverse)
 
-        result = jax.lax.while_loop(condition, body, state)
+        def progress_record(s, final, status=-1):
+            # ``progress_offset`` keeps iteration counts increasing across
+            # restarts of the same fit (exact-Hessian refinements).
+            pg = projected(s['x'], s['gradient'])
+            return dict(iteration=s['iteration']+progress_offset, value=s['value'],
+                edm=.5*jnp.dot(pg, s['inverse']@pg)*(1+3*s['inverse_uncertainty']),
+                max_gradient=jnp.max(jnp.abs(pg), initial=0.),
+                directional_edm=jnp.float64(jnp.nan), repairs=jnp.int32(0),
+                validating=jnp.array(False), active=condition(s),
+                start=(s['iteration'] == 0) & (progress_offset == 0),
+                final=jnp.array(final), status=jnp.asarray(status, jnp.int32),
+                budget=jnp.asarray(budget, jnp.int64)+progress_offset,
+                tolerance=jnp.float64(edm_tolerance if stopping_criterion == 'edm' else gradient_tolerance),
+                edm_criterion=jnp.array(stopping_criterion == 'edm'))
+
+        if progress_every:
+            # A host callback inside the step loop changes how XLA compiles
+            # it (results move at the 1e-11 level). Run the same steps in
+            # chunks of ``progress_every`` with no callback inside, and send
+            # the record between chunks, so results stay bit-identical.
+            from .progress import emit
+            def chunk(s):
+                emit(jnp.array(True), progress_record(s, False))
+                end = s['iteration']+progress_every
+                return jax.lax.while_loop(lambda t: condition(t) & (t['iteration'] < end), body, s)
+            result = jax.lax.while_loop(condition, chunk, state)
+        else:
+            result = jax.lax.while_loop(condition, body, state)
         status = jnp.where(~valid_initial, 4, jnp.where(~result['finite'], 3,
                  jnp.where(converged(result), 0, jnp.where(~result['line_ok'], 2, 1))))
+        if progress_every:
+            from .progress import emit
+            emit(jnp.array(True), progress_record(result, True, status))
         pg = projected(result['x'], result['gradient'])
         return dict(result, status=status, projected_gradient=pg,
                     estimated_edm=.5*jnp.dot(pg, result['inverse']@pg),

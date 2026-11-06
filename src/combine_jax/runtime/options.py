@@ -1,6 +1,8 @@
 """Strict Combine-style configuration for the expected-only public entrypoint."""
 import math
 
+from ..progress_display import add_progress_options, progress_every
+
 
 def host_memory_limit_gib(value):
     """Validate an explicit host RSS budget without changing device guards."""
@@ -65,6 +67,7 @@ def add_limits_command(commands):
     parser.add_argument('--output', type=Path)
     parser.add_argument('--workdir', type=Path)
     parser.add_argument('--runtime', type=Path, help='Runtime prefix created by scripts/setup_runtime.sh')
+    add_progress_options(parser)
 
 
 def request(args):
@@ -90,4 +93,4 @@ def request(args):
         template_convention='v10_density', float64=True, static_guard_gib=8.,
         host_memory_limit_gib=host_memory_limit_gib(args.host_memory_limit_gib),
         seed=args.seed, confidence_level=args.cl, r_abs_accuracy=args.rAbsAcc,
-        r_rel_accuracy=args.rRelAcc)
+        r_rel_accuracy=args.rRelAcc, progress_every=progress_every(args))

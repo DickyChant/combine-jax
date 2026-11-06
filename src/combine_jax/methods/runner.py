@@ -7,7 +7,8 @@ from .contracts import validate_expected_model
 
 def run_expected_model(model, poi, *, options=None, r_max=None, max_iterations=10000,
                        compiler_memory_limit_gib=8., discrete_policy='profile',
-                       release_compile_cache=False, compile_progress=None, fit_progress=None):
+                       release_compile_cache=False, compile_progress=None, fit_progress=None,
+                       progress_every=0):
     provenance = validate_expected_model(model, poi, discrete_policy=discrete_policy)
     choices = model.metadata.get('provenance', {}).get('discrete_choices')
     from ..tensor.limit_profile import LimitProfiler
@@ -15,7 +16,7 @@ def run_expected_model(model, poi, *, options=None, r_max=None, max_iterations=1
     profiler = LimitProfiler(model, poi, confidence_level=options.confidence_level,
         r_max=r_max, max_iterations=max_iterations, compiler_memory_limit_gib=compiler_memory_limit_gib,
         release_compile_cache=release_compile_cache, compile_progress=compile_progress,
-        fit_progress=fit_progress, defer_compile=True)
+        fit_progress=fit_progress, defer_compile=True, progress_every=progress_every)
     # The runtime passes a temporary model, so these large host arrays can be
     # reclaimed before GPU compilation. Metadata and device inputs stay owned
     # by the profiler; callers that retain their model keep their own ownership.
@@ -32,7 +33,9 @@ def run_expected_model(model, poi, *, options=None, r_max=None, max_iterations=1
         # Keep the native stepping result unchanged. Two additional conditional
         # fits distinguish a lost nuisance branch from a missing search bracket;
         # neither is silently substituted into a limit or denominator.
-        result['unresolved_baseline_diagnostic'] = profiler.diagnose_global_baseline()
+        from ..tensor.progress import task
+        with task('baseline diagnostic'):
+            result['unresolved_baseline_diagnostic'] = profiler.diagnose_global_baseline()
     elapsed = time.perf_counter()-start
     result.update(status='computed_pending_native_validation', method='AsymptoticLimits', poi=poi,
         dataset=provenance, timings={**profiler.timings, 'execution_seconds':elapsed},

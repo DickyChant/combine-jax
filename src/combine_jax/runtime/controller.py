@@ -12,8 +12,11 @@ from .options import request
 from .resources import process_group_memory, save_json, sha
 
 
-def stage(command, environment, log, *, rss_limit_mib=11264):
-    """Bound aggregate process-group RSS, preserving logs on any failure."""
+def stage(command, environment, log, *, rss_limit_mib=11264, on_poll=None):
+    """Bound aggregate process-group RSS, preserving logs on any failure.
+
+    ``on_poll()``, if given, is called at every RSS sample (twice a second).
+    """
     started = time.perf_counter()
     process = None
     report = dict(status='running', sampled_group_peak_rss_mib=0.,
@@ -37,7 +40,11 @@ def stage(command, environment, log, *, rss_limit_mib=11264):
                     save_json(resource_path, report)
                 if rss > rss_limit_mib:
                     raise MemoryError(f'Process group RSS {rss:.1f} MiB exceeds {rss_limit_mib} MiB')
+                if on_poll is not None:
+                    on_poll()
                 time.sleep(.5)
+            if on_poll is not None:
+                on_poll()
             if process.returncode:
                 tail = '\n'.join(log.read_text(errors='replace').splitlines()[-20:])
                 raise RuntimeError(f'Stage exited {process.returncode}; log {log}\n{tail}')
@@ -107,11 +114,13 @@ def run_limits(args, *, method='AsymptoticLimits'):
     if args.backend == 'cpu' and config.get('cpu_threads') is not None:
         environment['COMBINE_JAX_CPU_THREADS'] = str(config['cpu_threads'])
     lcg = ['bash',str(module/'run_lcg.sh'),str(prefix),runtime['lcg_view']]
-    def run(name,command,env):
+    def run(name,command,env,on_poll=None):
         print('Starting',name,flush=True)
         try:
+            # Without progress, call stage() exactly as before.
+            extra = dict(on_poll=on_poll) if on_poll else {}
             report['stages'][name] = stage(command,env,workdir/(name+'.log'),
-                rss_limit_mib=config['host_memory_limit_gib']*1024)
+                rss_limit_mib=config['host_memory_limit_gib']*1024,**extra)
         finally:
             evidence = workdir/(name+'.resources.json')
             if name not in report['stages'] and evidence.exists():
@@ -130,8 +139,19 @@ def run_limits(args, *, method='AsymptoticLimits'):
             MKL_NUM_THREADS='1',XLA_FLAGS='--xla_cpu_multi_thread_eigen=false')
         run('import',[str(prefix/'venv-import/bin/python'),'-m','combine_jax.runtime.import_model',
             str(config_path),str(workdir/'native/generation.json'),str(workdir/'import')],importer_env)
-        run('fit',lcg+['-m','combine_jax.runtime.multidim_fit' if multidim else 'combine_jax.runtime.fit',str(config_path),
-            str(workdir/'import/preparation.json'),str(workdir/'fit.json')],environment)
+        fit_environment, follow = environment, None
+        if config.get('progress_every'):
+            from .progress_follow import ProgressFollower
+            fit_environment = dict(environment, COMBINE_JAX_PROGRESS=str(workdir/'progress.jsonl'))
+            follow = ProgressFollower(workdir/'progress.jsonl', lanes=args.show_progress == 'lanes',
+                total=1+len(config['points']) if config.get('algo') == 'grid' else None)
+        try:
+            run('fit',lcg+['-m','combine_jax.runtime.multidim_fit' if multidim else 'combine_jax.runtime.fit',str(config_path),
+                str(workdir/'import/preparation.json'),str(workdir/'fit.json')],fit_environment,
+                on_poll=follow.poll if follow else None)
+        finally:
+            if follow:
+                follow.close()
         fit = json.loads((workdir/'fit.json').read_text())
         if not fit['all_fits_converged']:
             raise RuntimeError('Failed profile fit; refusing a successful ROOT output')

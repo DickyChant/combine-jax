@@ -68,7 +68,8 @@ def main(request_path, preparation_path, output):
             compiler_memory_limit_gib=config['static_guard_gib'], defer_compile=True,
             edm_validation=config['edm_validation'],
             global_edm_validation=config.get('global_edm_validation'),
-            compile_progress=compile_progress, fit_progress=fit_progress)
+            compile_progress=compile_progress, fit_progress=fit_progress,
+            progress_every=config.get('progress_every', 0))
         del model
         release_compilation_cache()
         driver.compile()

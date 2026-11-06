@@ -21,7 +21,7 @@ class LimitProfiler(ProfileCompiler):
                  global_up=None, global_start_fraction=.01,
                  compile_kinds=('global', 'conditional', 'unprofiled'),
                  release_compile_cache=False, compile_progress=None, fit_progress=None,
-                 defer_compile=False):
+                 defer_compile=False, progress_every=0):
         import jax
         import jax.numpy as jnp
         import numpy as np
@@ -110,7 +110,7 @@ class LimitProfiler(ProfileCompiler):
             if name not in compile_kinds:
                 continue
             options=dict(max_iterations=max_iterations,stopping_criterion='edm',
-                edm_tolerance=.002*.1*up,edm_validation='estimated')
+                edm_tolerance=.002*.1*up,edm_validation='estimated',progress_every=progress_every)
             if self.discrete:
                 from .discrete_fit import make_discrete_fit_function
                 discrete_fit=make_discrete_fit_function(model,_full_function=function,
@@ -183,7 +183,9 @@ class LimitProfiler(ProfileCompiler):
             c = {**c, 'reference': reference,
                 'lower': (c['physical_lower']-reference[:, free])/c['scale'],
                 'upper': (c['physical_upper']-reference[:, free])/c['scale']}
-        result = self._jax.block_until_ready(self.executables['global'](c, self.arrays))
+        from .progress import task
+        with task('global fit'):
+            result = self._jax.block_until_ready(self.executables['global'](c, self.arrays))
         return self._accept(result, 'global', None)
 
     def __call__(self, mu):
@@ -222,7 +224,10 @@ class LimitProfiler(ProfileCompiler):
         dynamic = {**c, 'reference': reference,
             'lower': (c['physical_lower']-reference[:, free])/c['scale'],
             'upper': (c['physical_upper']-reference[:, free])/c['scale']}
-        result = self._jax.block_until_ready(self.executables['conditional'](dynamic, self.arrays))
+        from .progress import task
+        name = f'{self.poi}={float(mu):g}'+(' (restart from global)' if kind != 'conditional' else '')
+        with task(name):
+            result = self._jax.block_until_ready(self.executables['conditional'](dynamic, self.arrays))
         return self._accept(result, kind, float(mu))
 
     def diagnose_global_baseline(self):
