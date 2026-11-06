@@ -3,6 +3,7 @@ import math
 from pathlib import Path
 
 from .options import assignments, ranges, add_host_memory_option, host_memory_limit_gib
+from ..progress_display import add_progress_options, progress_every
 
 
 def add_multidim_command(commands):
@@ -40,6 +41,7 @@ def add_multidim_command(commands):
     parser.add_argument('--output', type=Path)
     parser.add_argument('--workdir', type=Path)
     parser.add_argument('--runtime', type=Path)
+    add_progress_options(parser)
 
 
 def request(args):
@@ -85,4 +87,5 @@ def request(args):
         float64=True, static_guard_gib=8., seed=args.seed, r_max=None,
         host_memory_limit_gib=host_memory_limit_gib(args.host_memory_limit_gib),
         edm_validation=args.edm_validation, global_edm_validation=args.global_edm_validation,
-        robust_fit=bool(args.robustFit), runtime_definitions=runtime_definitions)
+        robust_fit=bool(args.robustFit), runtime_definitions=runtime_definitions,
+        progress_every=progress_every(args))

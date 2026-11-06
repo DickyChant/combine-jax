@@ -16,7 +16,7 @@ class MultiDimProfiler(ProfileCompiler):
     def __init__(self, model, *, conditional_parameters, max_iterations=10000,
                  compiler_memory_limit_gib=8., release_compile_cache=True,
                  compile_progress=None, fit_progress=None, defer_compile=False,
-                 edm_validation='estimated', global_edm_validation=None):
+                 edm_validation='estimated', global_edm_validation=None, progress_every=0):
         import jax
         import numpy as np
         from .model import make_model_function
@@ -75,7 +75,8 @@ class MultiDimProfiler(ProfileCompiler):
             options = dict(max_iterations=max_iterations, stopping_criterion='edm',
                            edm_tolerance=.002*.1*up,
                            edm_validation=global_edm_validation if not count else edm_validation,
-                           column_batch_size=1, curvature_linearization='recompute')
+                           column_batch_size=1, curvature_linearization='recompute',
+                           progress_every=progress_every)
             if self.discrete:
                 fit = make_discrete_fit_function(model, _full_function=function,
                     _channel_function=small, **options)
@@ -118,8 +119,11 @@ class MultiDimProfiler(ProfileCompiler):
 
     def _fit(self, key, coordinates, fixed, arrays):
         import jax
+        from .progress import task
         start = time.perf_counter()
-        result = jax.block_until_ready(self.executables[key](coordinates, arrays))
+        name = ','.join(f'{n}={v:g}' for n, v in fixed.items()) or 'global fit'
+        with task(name):
+            result = jax.block_until_ready(self.executables[key](coordinates, arrays))
         elapsed = time.perf_counter()-start
         self.timings['execution_seconds'] += elapsed
         fields = ('status', 'value', 'iteration', 'function_evaluations',

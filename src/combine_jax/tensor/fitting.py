@@ -33,7 +33,7 @@ def make_fit_function(function, *, covariance=True, return_matrices=True, column
                       max_iterations=1000, max_linesearch=40, gradient_tolerance=1e-6,armijo_roundoff_multiplier=8.,
                       stopping_criterion='projected_gradient', edm_tolerance=1e-4, max_edm_refinements=3,
                       edm_validation='exact_hessian', inverse_update_block_size=0,inverse_transpose_gather=False,
-                      rescale_small_secants=False):
+                      rescale_small_secants=False, progress_every=0):
     """Return ``fit(coordinates, model_arrays)`` for one outer JIT compilation.
 
     Coordinates are numeric runtime fields produced by ``fit_coordinates``:
@@ -69,6 +69,7 @@ def make_fit_function(function, *, covariance=True, return_matrices=True, column
     ``curvature_linearization='recompute'`` rematerializes gradient intermediates
     for each Hessian column batch instead of retaining the linearization tape.
     It preserves exact AD curvature and all convergence thresholds.
+    ``progress_every`` is passed to the optimizer; see ``make_bfgs``.
     """
     import jax
     import jax.numpy as jnp
@@ -85,7 +86,7 @@ def make_fit_function(function, *, covariance=True, return_matrices=True, column
         stopping_criterion=stopping_criterion,edm_tolerance=edm_tolerance,
         inverse_update_block_size=inverse_update_block_size,
         inverse_transpose_gather=inverse_transpose_gather,
-        rescale_small_secants=rescale_small_secants)
+        rescale_small_secants=rescale_small_secants, progress_every=progress_every)
     curvature=make_value_gradient_hessian(objective,column_batch_size=column_batch_size,
         linearization=curvature_linearization)
 
@@ -134,7 +135,8 @@ def make_fit_function(function, *, covariance=True, return_matrices=True, column
                     previous,matrices,count,calls=state
                     current=optimize(previous['x'],data,c['lower'],c['upper'],
                         initial_inverse=matrices[5],initial_inverse_uncertainty=0.,
-                        iteration_budget=max_iterations-previous['iteration'])
+                        iteration_budget=max_iterations-previous['iteration'],
+                        progress_offset=previous['iteration'])
                     for key in ('iteration','function_evaluations','gradient_evaluations','line_search_evaluations',
                                 'resets','skipped_updates','roundoff_accepts'):
                         current[key]=current[key]+previous[key]

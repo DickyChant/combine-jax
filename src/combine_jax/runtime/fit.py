@@ -80,7 +80,8 @@ def main(request_path, preparation_path, output):
                 r_abs_accuracy=config['r_abs_accuracy'],r_rel_accuracy=config['r_rel_accuracy']),
             r_max=config['r_max'],compiler_memory_limit_gib=config['static_guard_gib'],
             discrete_policy='fixed' if config['discrete_policy']=='fixed' else 'profile',
-            release_compile_cache=True,compile_progress=compile_progress,fit_progress=fit_progress)
+            release_compile_cache=True,compile_progress=compile_progress,fit_progress=fit_progress,
+            progress_every=config.get('progress_every',0))
         rows = audit_crossings(result)
         report.update(result, rows=rows, all_fits_converged=all(r['status']==0 for r in result['profile_fits']),
             status='complete' if all(r['status']=='resolved' for r in rows) else 'unresolved_crossing')

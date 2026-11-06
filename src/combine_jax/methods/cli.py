@@ -1,4 +1,5 @@
 """Expected-only statistical-method command line."""
+import contextlib
 import json
 import os
 from pathlib import Path
@@ -34,6 +35,8 @@ def add_limit_command(commands):
     parser.add_argument('--backend', choices=('cpu', 'gpu'), default='cpu')
     parser.add_argument('--workdir', type=Path)
     parser.add_argument('--output', type=Path, required=True)
+    from ..progress_display import add_progress_options
+    add_progress_options(parser)
 
 
 def run_limit(args):
@@ -88,9 +91,18 @@ def run_limit(args):
         poi = args.poi or model.metadata.get('asymptotic_asimov', {}).get('poi')
         from .contracts import validate_expected_model
         validate_expected_model(model, poi, run=args.run, no_fit_asimov=args.noFitAsimov)
-        result = run_expected_model(model, poi, r_max=args.rMax,
-            options=LimitOptions(confidence_level=args.cl, r_abs_accuracy=args.rAbsAcc,
-                                 r_rel_accuracy=args.rRelAcc, strict_bounds=args.strictBounds))
+        from ..progress_display import ProgressDisplay, progress_every
+        from ..tensor.progress import sink
+        display = ProgressDisplay(lanes=args.show_progress == 'lanes') if progress_every(args) else None
+        with sink(display.update) if display else contextlib.nullcontext():
+            try:
+                result = run_expected_model(model, poi, r_max=args.rMax,
+                    options=LimitOptions(confidence_level=args.cl, r_abs_accuracy=args.rAbsAcc,
+                                         r_rel_accuracy=args.rRelAcc, strict_bounds=args.strictBounds),
+                    progress_every=progress_every(args))
+            finally:
+                if display:
+                    display.close()
         report.update(result, model=str(model_path),
             model_sha256={n: digest(model_path/n) for n in ('model.json','arrays.npz')})
     except BaseException as exc:
