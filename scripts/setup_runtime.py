@@ -66,6 +66,14 @@ def main():
     launcher.write_text('#!/usr/bin/env bash\nset -eo pipefail\n'
         'prefix="$(cd "$(dirname "$(realpath "$0")")/.." && pwd)"\n'
         'export DHI_COMBINE_JAX="$prefix"\n'
+        'if [[ "${1:-}" == import ]]; then\n'
+        '  unset PYTHONHOME PYTHONPATH LD_LIBRARY_PATH ROOTSYS ROOT_INCLUDE_PATH VIRTUAL_ENV\n'
+        '  export PATH="$prefix/venv-import/bin:/usr/bin:/bin" PYTHONPATH="$prefix/code/src"\n'
+        '  export PYTHONNOUSERSITE=1 JAX_PLATFORMS=cpu JAX_ENABLE_X64=true\n'
+        '  export OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1\n'
+        '  export XLA_FLAGS="--xla_cpu_multi_thread_eigen=false"\n'
+        '  exec "$prefix/venv-import/bin/python" -m combine_jax.cli "$@"\n'
+        'fi\n'
         'view="${COMBINE_JAX_LCG_VIEW:-'+manifest['lcg_view']+'}"\n'
         'exec bash "$prefix/code/src/combine_jax/runtime/run_lcg.sh" "$prefix" "$view" -m combine_jax.cli "$@"\n')
     launcher.chmod(0o755)

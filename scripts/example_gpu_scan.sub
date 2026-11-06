@@ -1,0 +1,20 @@
+# Set these paths to your prepared archives before submitting with condor_submit.
+# Prepare/import on a sufficiently large CPU node, not on a memory-limited laptop.
+universe = vanilla
+executable = scripts/example_gpu_scan.sh
+arguments = runtime.tar.gz model.tar.gz kl -15 1 10 26
+transfer_input_files = runtime.tar.gz,model.tar.gz
+should_transfer_files = YES
+when_to_transfer_output = ON_EXIT
+transfer_output_files = results
+output = gpu_scan.out
+error = gpu_scan.err
+log = gpu_scan.log
+request_gpus = 1
+requirements = regexp("A100|H100", GPUs_DeviceName) && !regexp("MIG", GPUs_DeviceName)
+request_cpus = 3
+request_memory = 16000
+request_disk = 16 GB
++MaxRuntime = 86400
++JobBatchName = "combine-jax_example_scan"
+queue 1

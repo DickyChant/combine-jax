@@ -10,7 +10,9 @@ import time
 from .resources import Resources, provenance, save_json, sha
 
 
-def verify(backend):
+def verify(backend, *, threads=None):
+    from .cpu_threads import configure_cpu_threads
+    configure_cpu_threads(backend, threads)
     if backend == 'gpu' and 'MIG-' in os.environ.get('CUDA_VISIBLE_DEVICES', ''):
         raise RuntimeError('MIG allocations are unsupported; request a full A100/H100 GPU')
     import jax
@@ -34,9 +36,10 @@ def main(request_path, preparation_path, output):
     resource.setrlimit(resource.RLIMIT_CORE,(0,0))
     stack = resource.getrlimit(resource.RLIMIT_STACK)
     resource.setrlimit(resource.RLIMIT_STACK,(stack[1],stack[1]))
-    os.sched_setaffinity(0, sorted(os.sched_getaffinity(0))[:8])
     config = json.loads(Path(request_path).read_text())
-    devices = verify(config['backend'])
+    if config['backend'] == 'gpu':
+        os.sched_setaffinity(0, sorted(os.sched_getaffinity(0))[:8])
+    devices = verify(config['backend'], threads=config.get('cpu_threads'))
     import jax
     from ..tensor.bundle import TensorBundle
     from ..methods.runner import run_expected_model
@@ -53,7 +56,8 @@ def main(request_path, preparation_path, output):
         profiles=[], jax_allocator_samples=[], float64=True, static_guard_gib=8.)
     if config['backend'] == 'gpu':
         report['versions']['jax-cuda12-plugin'] = version('jax-cuda12-plugin')
-    monitor = Resources(config['backend']=='gpu', output)
+    monitor = Resources(config['backend']=='gpu', output,
+        rss_limit_mib=config.get('host_memory_limit_gib',11.)*1024)
     def save():
         report['resources'] = monitor.snapshot()
         save_json(output, report)

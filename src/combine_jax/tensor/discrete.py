@@ -5,13 +5,15 @@ from ..graph import UnsupportedModelError
 from .bundle import TensorBundle
 
 
-def attach_discrete_profile(model,nodes,rows,scalars,*,constraint_names,compact_data=True):
+def attach_discrete_profile(model,nodes,rows,scalars,*,constraint_names,compact_data=True,
+                            native_order=None, shared_shapes=False, compact_density=True):
     """Retain one small channel program and masks, never one model per choice.
 
     The initial implementation covers independent, unconstrained MultiPdf shape
     parameters. Common signal/yield/constraint parameters remain in the full
-    fit. Shared discrete shape parameters need native masking-offset semantics
-    beyond this factorized short scan and are rejected explicitly.
+    fit. Explicit shared_shapes requires native category order and the separate
+    native masking replay driver. Constrained shapes and dependencies outside
+    discrete channels remain unsupported, rather than dropping their terms.
     """
     from .binned_channels import pack_binned_channels
     binned=model.metadata['components'].get('binned',{})
@@ -38,7 +40,7 @@ def attach_discrete_profile(model,nodes,rows,scalars,*,constraint_names,compact_
             masks[i,index,[lookup[n] for n in active]]=True
             alternatives[name].append(active)
     union=np.any(masks,axis=(0,1))
-    if np.any(np.sum(np.any(masks,axis=1),axis=0)>1):
+    if np.any(np.sum(np.any(masks,axis=1),axis=0)>1) and not shared_shapes:
         raise UnsupportedModelError('Discrete shape parameters shared between categories need native masking-offset validation')
     union_names={n for n,i in lookup.items() if union[i]}
     constrained=union_names&set().union(*(dependencies(n) for n in constraint_names))
@@ -52,21 +54,39 @@ def attach_discrete_profile(model,nodes,rows,scalars,*,constraint_names,compact_
         elif not row['masked'] and union_names&deps:
             raise UnsupportedModelError(f'{row["name"]}: discrete shape parameters also affect a non-discrete channel')
     subset=pack_binned_channels(nodes,selected,scalars,compact_data=compact_data)
+    if compact_density:
+        from .density_compaction import compact_density_storage
+        subset=compact_density_storage(subset)
     if subset.metadata['discrete_categories']!=categories:
         raise ValueError('Discrete subset category order differs from the full model')
-    offsets=[np.zeros(k,dtype=np.int32)]
-    for i,category in enumerate(categories):
-        for step in range(1,category['count']):
-            row=np.zeros(k,dtype=np.int32);row[i]=step;offsets.append(row)
+    if shared_shapes:
+        if native_order is None or len(set(native_order))!=len(native_order) or set(native_order)!=set(category_lookup):
+            raise UnsupportedModelError('Native shared-shape profiling requires an exact registered category permutation')
+        order=np.asarray([category_lookup[n] for n in native_order],dtype=np.int32)
+    else:
+        order=np.arange(k,dtype=np.int32)
+    from .discrete_batch import orthogonal_offsets
+    sizes=np.asarray([c['count'] for c in categories],dtype=np.int32)
+    offsets=orthogonal_offsets(sizes,order)
     arrays={**model.arrays,**{'discrete_channels__'+n:a for n,a in subset.arrays.items()},
         'discrete_profile__alternative_parameters':masks,
         'discrete_profile__parameter_union':union,
         'discrete_profile__channel_categories':np.asarray(membership,dtype=bool),
-        'discrete_profile__orthogonal_offsets':np.stack(offsets),
-        'discrete_profile__category_sizes':np.asarray([c['count'] for c in categories],dtype=np.int32)}
+        'discrete_profile__orthogonal_offsets':offsets,
+        'discrete_profile__category_sizes':sizes}
+    if shared_shapes:
+        channel_parameters=np.zeros((len(selected),len(names)),dtype=bool)
+        for i,row in enumerate(selected):
+            channel_parameters[i,[lookup[n] for n in union_names&dependencies(row['pdf'])]]=True
+        arrays.update(discrete_profile__native_order=order,
+                      discrete_profile__channel_parameters=channel_parameters)
     metadata={**model.metadata,'discrete_profile':dict(categories=categories,
         channels=subset.metadata,alternative_parameters=alternatives,
-        scope='Native short combinations, independent unconstrained shape parameters; common parameters frozen during the discrete pass.')}
+        scope=('Native maskChannels=2 ordered replay with shared unconstrained shape parameters; common parameters frozen.'
+               if shared_shapes else 'Native short combinations, independent unconstrained shape parameters; common parameters frozen during the discrete pass.'))}
+    if shared_shapes:
+        metadata['discrete_profile'].update(driver='native_batched',native_category_order=list(native_order),
+            masking=2,raw_physical_nll_separate_from_masking_offset=True)
     # Preserve ownership of large model buffers; only the new maps need freezing.
     for value in arrays.values():value.flags.writeable=False
     return TensorBundle._from_frozen(metadata,arrays)

@@ -40,7 +40,8 @@ def dense(base, step, change):
 
 @pytest.mark.parametrize('n,block', [(1,128),(5,1),(5,3),(5,128),(137,16),(137,128)])
 @pytest.mark.parametrize('kind', ['symmetric','asymmetric','bound_masked','reset'])
-def test_dense_update_agreement(n,block,kind):
+@pytest.mark.parametrize('transpose_gather',[False,True])
+def test_dense_update_agreement(n,block,kind,transpose_gather):
     rng=np.random.default_rng(527)
     base=rng.normal(size=(n,n))
     if kind!='asymmetric':base=base@base.T+np.eye(n)
@@ -51,7 +52,7 @@ def test_dense_update_agreement(n,block,kind):
     step=rng.normal(size=n);change=step+.01*rng.normal(size=n)
     args=tuple(jnp.asarray(v,dtype=jnp.float64) for v in (base,step,change))
     reference=jax.jit(dense)(*args)
-    actual=jax.jit(lambda *a:blocked_bfgs_update(*a,block_size=block))(*args)
+    actual=jax.jit(lambda *a:blocked_bfgs_update(*a,block_size=block,transpose_gather=transpose_gather))(*args)
     np.testing.assert_allclose(actual[0],reference[0],rtol=2e-13,atol=5e-13)
     np.testing.assert_allclose(actual[1],reference[1],rtol=2e-13,atol=5e-15)
     assert bool(actual[2])==bool(reference[2])
@@ -75,7 +76,8 @@ def test_repeated_updates_and_nonfinite_status():
 @pytest.mark.parametrize('reset',[False,True])
 @pytest.mark.parametrize('update',[False,True])
 @pytest.mark.parametrize('kind',['symmetric','asymmetric'])
-def test_implicit_bound_mask_reset_and_skipped_update(reset,update,kind):
+@pytest.mark.parametrize('transpose_gather',[False,True])
+def test_implicit_bound_mask_reset_and_skipped_update(reset,update,kind,transpose_gather):
     rng=np.random.default_rng(800);n=13
     matrix=rng.normal(size=(n,n))
     if kind=='symmetric':matrix=matrix@matrix.T+np.eye(n)
@@ -85,7 +87,8 @@ def test_implicit_bound_mask_reset_and_skipped_update(reset,update,kind):
     change=step+.02*jnp.asarray(rng.normal(size=n)) if update else jnp.zeros(n)
     base=jnp.where(reset|blocked[:,None]|blocked[None,:],jnp.eye(n),matrix)
     expected=dense(base,step,change) if update else (base,0.,True)
-    actual=jax.jit(lambda m,s,c,b,r,u:blocked_bfgs_update(m,s,c,blocked=b,reset=r,update=u,block_size=5))(
+    actual=jax.jit(lambda m,s,c,b,r,u:blocked_bfgs_update(m,s,c,blocked=b,reset=r,update=u,block_size=5,
+        transpose_gather=transpose_gather))(
         matrix,step,change,blocked,jnp.array(reset),jnp.array(update))
     np.testing.assert_allclose(actual[0],expected[0],rtol=2e-13,atol=5e-13)
     np.testing.assert_allclose(actual[1],expected[1],rtol=2e-13,atol=5e-15)

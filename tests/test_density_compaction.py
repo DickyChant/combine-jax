@@ -75,6 +75,7 @@ def test_all_discrete_choices_and_full_model_metadata(multipdf_path, freeze_shap
         original = from_workspace(workspace, discrete_policy='profile', compact_density_storage=False)
     compact = compact_model_density_storage(original)
     assert compact.arrays['binned__initial_values'].size < original.arrays['binned__initial_values'].size
+    assert compact.arrays['discrete_channels__initial_values'].size < original.arrays['discrete_channels__initial_values'].size
     assert compact.metadata['parameter_info'] == original.metadata['parameter_info']
     assert compact.metadata['provenance'] == original.metadata['provenance']
     assert compact_model_density_storage(compact) is compact
@@ -82,6 +83,12 @@ def test_all_discrete_choices_and_full_model_metadata(multipdf_path, freeze_shap
     funcs = [jax.jit(jax.value_and_grad(make_model_function(b, binned_gradient='structural')))
              for b in (original, compact)]
     hess = [jax.jit(jax.hessian(make_model_function(b))) for b in (original, compact)]
+    from combine_jax.tensor.discrete import make_discrete_channels_function
+    def local_objective(bundle):
+        channels = make_discrete_channels_function(bundle)
+        return lambda theta, arrays: jnp.sum(channels(theta, arrays))
+    local = [jax.jit(jax.value_and_grad(local_objective(b))) for b in (original, compact)]
+    local_hess = [jax.jit(jax.hessian(local_objective(b))) for b in (original, compact)]
     for choice in (0, 1):
         buffers = [dict(b.arrays, binned__discrete_indices=np.array([choice], dtype=np.int32))
                    for b in (original, compact)]
@@ -89,6 +96,9 @@ def test_all_discrete_choices_and_full_model_metadata(multipdf_path, freeze_shap
             result = [f(point, a) for f, a in zip(funcs, buffers)]
             for a, b in zip(*result): np.testing.assert_allclose(a, b, rtol=1e-12, atol=1e-12)
             np.testing.assert_allclose(hess[0](point,buffers[0]),hess[1](point,buffers[1]),rtol=1e-12,atol=1e-12)
+            for left,right in zip(local[0](point,buffers[0]),local[1](point,buffers[1])):
+                assert np.asarray(left).tobytes()==np.asarray(right).tobytes()
+            np.testing.assert_allclose(local_hess[0](point,buffers[0]),local_hess[1](point,buffers[1]),rtol=1e-12,atol=1e-12)
             np.testing.assert_array_equal(
                 evaluate_model_numpy(TensorBundle(original.metadata,buffers[0]),point),
                 evaluate_model_numpy(TensorBundle(compact.metadata,buffers[1]),point))

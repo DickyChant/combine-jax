@@ -68,19 +68,30 @@ def compact_density_storage(bundle):
 
 
 def compact_model_density_storage(model):
-    """Apply exact density compaction while preserving all other model metadata."""
+    """Compact both main and discrete-candidate arenas, retaining all choices."""
     from .model import unpack_model
 
     components = unpack_model(model)
-    if 'binned' not in components:
-        return model
-    original = components['binned']
-    compact = compact_density_storage(original)
-    if compact is original:
+    arenas = []
+    if 'binned' in components:
+        arenas.append(('binned', components['binned']))
+    if 'discrete_profile' in model.metadata:
+        prefix = 'discrete_channels__'
+        arenas.append(('discrete_channels', TensorBundle._from_frozen(
+            model.metadata['discrete_profile']['channels'],
+            {n[len(prefix):]: a for n, a in model.arrays.items() if n.startswith(prefix)})))
+    updates = {name: compact for name, original in arenas
+               if (compact := compact_density_storage(original)) is not original}
+    if not updates:
         return model
     metadata = deepcopy(model.metadata)
-    metadata['components']['binned'] = compact.metadata
-    arrays = {**model.arrays, **{'binned__'+n: a for n, a in compact.arrays.items()}}
+    arrays = dict(model.arrays)
+    for name, compact in updates.items():
+        if name == 'binned':
+            metadata['components']['binned'] = compact.metadata
+        else:
+            metadata['discrete_profile']['channels'] = compact.metadata
+        arrays.update({name+'__'+n: a for n, a in compact.arrays.items()})
     result = TensorBundle._from_frozen(metadata, arrays)
     unpack_model(result)
     return result

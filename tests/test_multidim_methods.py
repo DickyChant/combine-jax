@@ -107,10 +107,12 @@ def test_multidim_cli_requires_explicit_asimov():
         request(parser.parse_args(base+['-t', '-1']))
     config = request(parser.parse_args(base+['-t', '-1', '--setParameters', 'r=1']))
     assert config['signal_strength'] == 1. and config['float64']
+    assert config['host_memory_limit_gib']==11.
     assert config['points'] == [{'r': -2.}, {'r': 0.}, {'r': 2.}]
     config = request(parser.parse_args(base+['-t', '-1', '--setParameters', 'r=1',
-        '--X-rtd', 'REMOVE_CONSTANT_ZERO_POINT=1']))
+        '--X-rtd', 'REMOVE_CONSTANT_ZERO_POINT=1','--host-memory-limit-gib','30']))
     assert config['runtime_definitions'] == {'REMOVE_CONSTANT_ZERO_POINT': 1}
+    assert config['host_memory_limit_gib']==30. and config['static_guard_gib']==8.
     with pytest.raises(ValueError, match='Unsupported MultiDimFit runtime'):
         request(parser.parse_args(base+['-t', '-1', '--setParameters', 'r=1',
             '--X-rtd', 'UNKNOWN_CHANGE=1']))

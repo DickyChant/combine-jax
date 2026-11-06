@@ -2,6 +2,19 @@
 import math
 
 
+def host_memory_limit_gib(value):
+    """Validate an explicit host RSS budget without changing device guards."""
+    value = float(value)
+    if not math.isfinite(value*1024) or value <= 0:
+        raise ValueError('Host memory limit must be positive and finite, in GiB')
+    return value
+
+
+def add_host_memory_option(parser):
+    parser.add_argument('--host-memory-limit-gib', type=host_memory_limit_gib, default=11.,
+        help='Host RSS guard in GiB (default: 11); independent of the 8 GiB compiler guard')
+
+
 def assignments(text):
     result = {}
     for item in filter(None, text.split(',')):
@@ -27,7 +40,10 @@ def ranges(text):
 
 def add_limits_command(commands):
     from pathlib import Path
+    from .cpu_threads import add_threads_option
     parser = commands.add_parser('limits', help='End-to-end blinded limits with standard Combine ROOT output')
+    add_host_memory_option(parser)
+    add_threads_option(parser)
     parser.add_argument('--workspace', '-d', type=Path, required=True)
     parser.add_argument('--datacard', type=Path, help='Optional additional channel-set check')
     parser.add_argument('--poi', '--pois', '--redefineSignalPOIs', dest='poi', required=True)
@@ -70,6 +86,8 @@ def request(args):
         freeze_groups=[s for s in args.freezeNuisanceGroups.split(',') if s],
         r_max=args.rMax, run=args.run, no_fit_asimov=True, signal_strength=0.,
         backend=args.backend, discrete_policy=args.discrete_policy,
+        cpu_threads=getattr(args, 'threads', None),
         template_convention='v10_density', float64=True, static_guard_gib=8.,
+        host_memory_limit_gib=host_memory_limit_gib(args.host_memory_limit_gib),
         seed=args.seed, confidence_level=args.cl, r_abs_accuracy=args.rAbsAcc,
         r_rel_accuracy=args.rRelAcc)

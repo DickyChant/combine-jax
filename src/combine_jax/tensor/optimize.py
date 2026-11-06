@@ -9,7 +9,7 @@ OPTIMIZER_STATUS = {0: 'converged', 1: 'iteration_limit', 2: 'line_search_failed
 def make_bfgs(function, *, max_iterations=1000, max_linesearch=40,
               gradient_tolerance=1e-6,armijo_roundoff_multiplier=8.,
               stopping_criterion='projected_gradient', edm_tolerance=1e-4,
-              inverse_update_block_size=0):
+              inverse_update_block_size=0, inverse_transpose_gather=False, rescale_small_secants=False):
     """Return a JIT-compatible minimizer in caller-scaled free coordinates.
 
     Convergence uses the box-projected gradient by default. Optional ``edm``
@@ -33,9 +33,19 @@ def make_bfgs(function, *, max_iterations=1000, max_linesearch=40,
     update and its L1 uncertainty reductions over row blocks, and creates the
     initial identity after evaluating the initial gradient. Zero retains the
     original implementation. Neither option is limited-memory BFGS.
+    Opt-in ``rescale_small_secants`` rescales both secant vectors by the same
+    positive number when their dot product is <=1e-18. The BFGS update is
+    invariant under this rescaling. It avoids an absolute curvature cutoff
+    preventing all updates at an already-near-stationary restart. Positive
+    curvature, the relative angle check, and the requirement for an actual
+    update before EDM acceptance remain enforced. Default behavior is unchanged.
     """
     import jax
     import jax.numpy as jnp
+    if type(inverse_transpose_gather) is not bool or (inverse_transpose_gather and not inverse_update_block_size):
+        raise ValueError('inverse_transpose_gather must be boolean and requires a positive inverse update block size')
+    if type(rescale_small_secants) is not bool:
+        raise ValueError('rescale_small_secants must be boolean')
     if type(inverse_update_block_size) is not int or inverse_update_block_size < 0:
         raise ValueError('inverse_update_block_size must be a nonnegative integer')
     if type(max_iterations) is not int or max_iterations < 0:
@@ -146,13 +156,25 @@ def make_bfgs(function, *, max_iterations=1000, max_linesearch=40,
                                                 lambda q: (s['value'], g), candidate)
             step, change = candidate-x, jnp.where(blocked, 0., newgradient-g)
             ys = jnp.dot(step, change)
-            adequate = (ys > 1e-18) & (ys > 1e-12*jnp.linalg.norm(step)*jnp.linalg.norm(change))
+            if rescale_small_secants:
+                # Common scaling cancels from every BFGS term. Do not alter
+                # ordinary updates, accepted parameters or line-search values.
+                magnitude = jnp.maximum(jnp.max(jnp.abs(step), initial=0.),
+                                        jnp.max(jnp.abs(change), initial=0.))
+                scale = jnp.where((ys <= 1e-18) & (magnitude > 0.)
+                                  & jnp.isfinite(magnitude), magnitude, 1.)
+                step, change = step/scale, change/scale
+                ys = jnp.dot(step, change)
+                adequate = jnp.isfinite(ys) & (ys > 0.)
+            else:
+                adequate = ys > 1e-18
+            adequate &= ys > 1e-12*jnp.linalg.norm(step)*jnp.linalg.norm(change)
 
             if inverse_update_block_size and n:
                 from .bfgs_update import blocked_bfgs_update
                 inverse, relative_change, finite_inverse = blocked_bfgs_update(
                     s['inverse'], step, change, block_size=inverse_update_block_size,
-                    blocked=blocked, reset=~descent, update=adequate)
+                    blocked=blocked, reset=~descent, update=adequate,transpose_gather=inverse_transpose_gather)
             else:
                 def update(_):
                     hy = base @ change

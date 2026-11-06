@@ -8,7 +8,9 @@ import time
 
 
 def add_limit_command(commands):
+    from ..runtime.cpu_threads import add_threads_option
     parser = commands.add_parser('limit', help='AsymptoticLimits expected CLs upper limits')
+    add_threads_option(parser)
     source = parser.add_mutually_exclusive_group(required=True)
     source.add_argument('--workspace', type=Path)
     source.add_argument('--model', type=Path, help='Previously prepared neutral background-Asimov model')
@@ -47,9 +49,10 @@ def run_limit(args):
     os.environ['JAX_ENABLE_X64'] = 'true'
     os.environ['JAX_PLATFORMS'] = 'cuda' if args.backend == 'gpu' else 'cpu'
     os.environ['XLA_PYTHON_CLIENT_PREALLOCATE'] = 'false'
-    for name in ('OMP_NUM_THREADS','OPENBLAS_NUM_THREADS','MKL_NUM_THREADS'):
-        os.environ[name] = '1'
-    os.sched_setaffinity(0, sorted(os.sched_getaffinity(0))[:8])
+    if args.backend == 'gpu':
+        for name in ('OMP_NUM_THREADS','OPENBLAS_NUM_THREADS','MKL_NUM_THREADS'):
+            os.environ[name] = '1'
+        os.sched_setaffinity(0, sorted(os.sched_getaffinity(0))[:8])
     import jax
     import jaxlib
     assert jax.config.x64_enabled
@@ -58,7 +61,9 @@ def run_limit(args):
     if args.backend == 'gpu':
         assert len(devices) == 1 and any(x in devices[0].device_kind for x in ('A100','H100'))
     start = time.perf_counter()
+    from ..runtime.cpu_threads import thread_configuration
     report = dict(status='running', method='AsymptoticLimits', host=platform.node(),
+        cpu_threads=thread_configuration(),
         backend=args.backend, jax_version=jax.__version__, jaxlib_version=jaxlib.__version__,
         devices=[dict(kind=d.device_kind, platform=d.platform) for d in devices], float64=True)
     args.output.parent.mkdir(parents=True, exist_ok=True)

@@ -44,6 +44,8 @@ def make_discrete_fit_function(model,*,discrete_tolerance=.001,maximum_discrete_
     from .fitting import make_fit_function
     from .profiling import PROFILE_FIELDS
     if 'discrete_profile' not in model.metadata:raise ValueError('Model lacks discrete profile maps')
+    if model.metadata['discrete_profile'].get('driver')=='native_batched':
+        raise ValueError('Native shared-shape maps require the batched masking replay driver')
     if discrete_tolerance<=0 or maximum_discrete_iterations<1:raise ValueError('Invalid discrete convergence policy')
     if 'covariance' in fit_options:raise ValueError('Discrete envelope does not define a covariance across index switches')
     # The limit driver shares these immutable objective closures between its

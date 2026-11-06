@@ -32,7 +32,8 @@ def make_fit_function(function, *, covariance=True, return_matrices=True, column
                       curvature_linearization='reuse',
                       max_iterations=1000, max_linesearch=40, gradient_tolerance=1e-6,armijo_roundoff_multiplier=8.,
                       stopping_criterion='projected_gradient', edm_tolerance=1e-4, max_edm_refinements=3,
-                      edm_validation='exact_hessian', inverse_update_block_size=0):
+                      edm_validation='exact_hessian', inverse_update_block_size=0,inverse_transpose_gather=False,
+                      rescale_small_secants=False):
     """Return ``fit(coordinates, model_arrays)`` for one outer JIT compilation.
 
     Coordinates are numeric runtime fields produced by ``fit_coordinates``:
@@ -61,6 +62,8 @@ def make_fit_function(function, *, covariance=True, return_matrices=True, column
     vector errors, convergence and curvature-status fields remain available.
     Optional ``inverse_update_block_size`` streams dense BFGS update temporaries;
     zero retains the original implementation and no convergence setting changes.
+    ``rescale_small_secants`` is the optimizer's opt-in algebraically invariant
+    secant scaling for near-stationary restarts; it leaves EDM tolerances intact.
     ``errors`` and ``curvature_errors`` are covariance diagonal square roots;
     ``reported_errors`` separately applies Minuit's bounded finite-step convention.
     ``curvature_linearization='recompute'`` rematerializes gradient intermediates
@@ -80,7 +83,9 @@ def make_fit_function(function, *, covariance=True, return_matrices=True, column
     optimize=make_bfgs(objective,max_iterations=max_iterations,max_linesearch=max_linesearch,
         gradient_tolerance=gradient_tolerance,armijo_roundoff_multiplier=armijo_roundoff_multiplier,
         stopping_criterion=stopping_criterion,edm_tolerance=edm_tolerance,
-        inverse_update_block_size=inverse_update_block_size)
+        inverse_update_block_size=inverse_update_block_size,
+        inverse_transpose_gather=inverse_transpose_gather,
+        rescale_small_secants=rescale_small_secants)
     curvature=make_value_gradient_hessian(objective,column_batch_size=column_batch_size,
         linearization=curvature_linearization)
 

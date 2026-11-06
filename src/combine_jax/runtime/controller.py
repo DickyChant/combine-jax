@@ -104,11 +104,14 @@ def run_limits(args, *, method='AsymptoticLimits'):
     environment = dict(os.environ)
     environment.update(JAX_ENABLE_X64='true',JAX_PLATFORMS='cuda' if args.backend=='gpu' else 'cpu',
                        XLA_PYTHON_CLIENT_PREALLOCATE='false')
+    if args.backend == 'cpu' and config.get('cpu_threads') is not None:
+        environment['COMBINE_JAX_CPU_THREADS'] = str(config['cpu_threads'])
     lcg = ['bash',str(module/'run_lcg.sh'),str(prefix),runtime['lcg_view']]
     def run(name,command,env):
         print('Starting',name,flush=True)
         try:
-            report['stages'][name] = stage(command,env,workdir/(name+'.log'))
+            report['stages'][name] = stage(command,env,workdir/(name+'.log'),
+                rss_limit_mib=config['host_memory_limit_gib']*1024)
         finally:
             evidence = workdir/(name+'.resources.json')
             if name not in report['stages'] and evidence.exists():

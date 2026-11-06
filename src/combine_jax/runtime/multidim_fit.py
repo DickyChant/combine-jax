@@ -16,11 +16,12 @@ def main(request_path, preparation_path, output):
     resource.setrlimit(resource.RLIMIT_CORE, (0, 0))
     stack = resource.getrlimit(resource.RLIMIT_STACK)
     resource.setrlimit(resource.RLIMIT_STACK, (stack[1], stack[1]))
-    os.sched_setaffinity(0, sorted(os.sched_getaffinity(0))[:8])
     config = json.loads(Path(request_path).read_text())
     if config['method'] != 'MultiDimFit' or config['run'] != 'expected':
         raise ValueError('Explicit Asimov MultiDimFit request required')
-    devices = verify(config['backend'])
+    if config['backend'] == 'gpu':
+        os.sched_setaffinity(0, sorted(os.sched_getaffinity(0))[:8])
+    devices = verify(config['backend'], threads=config.get('cpu_threads'))
     import jax
     from ..tensor.bundle import TensorBundle
     from ..tensor.multidim_profile import MultiDimProfiler
@@ -38,7 +39,8 @@ def main(request_path, preparation_path, output):
     model = TensorBundle.load(path)
     if model.metadata['multidim_asimov']['dataset_identity'] != preparation['dataset']['identity']:
         raise ValueError('Asimov dataset identity mismatch')
-    monitor = Resources(config['backend'] == 'gpu', output)
+    monitor = Resources(config['backend'] == 'gpu', output,
+        rss_limit_mib=config.get('host_memory_limit_gib',11.)*1024)
     report = dict(provenance(), status='running', config=config, preparation=preparation,
         devices=[dict(platform=d.platform, kind=d.device_kind) for d in devices],
         versions={n: version(n) for n in ('jax', 'jaxlib', 'numpy', 'scipy')},

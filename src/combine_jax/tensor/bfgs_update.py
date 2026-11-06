@@ -29,7 +29,7 @@ def deferred_identity(dependency, *, block_size=128):
 
 
 def blocked_bfgs_update(matrix, step, change, *, block_size=128,
-                        blocked=None, reset=False, update=True):
+                        blocked=None, reset=False, update=True, transpose_gather=False):
     """Return the updated inverse, relative L1 change and finiteness.
 
     The caller has already checked the secant curvature. ``blocked`` decouples
@@ -40,9 +40,13 @@ def blocked_bfgs_update(matrix, step, change, *, block_size=128,
     expression. No tolerance, precision, matrix element or symmetrization is
     dropped. Both old matrix orientations are read, so asymmetric input is
     handled in the same way as the existing dense update.
+    ``transpose_gather`` is an opt-in memory experiment: load transposed rows
+    with two-coordinate gathers instead of a column slice/transpose, so a GPU
+    compiler need not materialize the whole matrix transpose outside the loop.
     """
     import jax
     import jax.numpy as jnp
+    if type(transpose_gather) is not bool:raise ValueError('transpose_gather must be boolean')
     if type(block_size) is not int or block_size <= 0:
         raise ValueError('block_size must be a positive integer')
     if matrix.ndim != 2 or matrix.shape[0] != matrix.shape[1] or matrix.dtype != jnp.float64:
@@ -68,7 +72,8 @@ def blocked_bfgs_update(matrix, step, change, *, block_size=128,
         first = jnp.minimum(i*width, n-width)
         rows = first+jnp.arange(width)
         old = jax.lax.dynamic_slice_in_dim(matrix, first, width, axis=0)
-        old_transpose = jax.lax.dynamic_slice_in_dim(matrix, first, width, axis=1).T
+        old_transpose = (matrix[columns[None,:],rows[:,None]] if transpose_gather
+            else jax.lax.dynamic_slice_in_dim(matrix, first, width, axis=1).T)
         mask = reset | blocked[rows,None] | blocked[None,:]
         identity = (rows[:,None] == columns[None,:]).astype(matrix.dtype)
         old = jnp.where(mask, identity, old)

@@ -164,7 +164,7 @@ def evaluate_model_numpy(model,theta):
     return np.sum(constraints)+np.sum(channels)+template_sum+model.arrays['offset']
 
 
-def from_workspace(workspace,datacard=None,*,data='data_obs',analytic_barlow_beeston=True,compact_shape_data=True,compact_density_storage=True,fit_policy='workspace',template_convention='v10_density',discrete_policy='fixed',cbshape_convention='native',profile_bounds_policy='reject',analysis=None,dataset_kind=None):
+def from_workspace(workspace,datacard=None,*,data='data_obs',analytic_barlow_beeston=True,compact_shape_data=True,compact_density_storage=True,fit_policy='workspace',template_convention='v10_density',discrete_policy='fixed',cbshape_convention='native',profile_bounds_policy='reject',analysis=None,dataset_kind=None,discrete_profile_mode='independent'):
     """Complete supported workspace+card import; other shapes fail by name.
 
     Existing extraction is reused once at the boundary, including exact native
@@ -178,6 +178,8 @@ def from_workspace(workspace,datacard=None,*,data='data_obs',analytic_barlow_bee
     """
     if discrete_policy not in ('fixed','profile'):
         raise ValueError('Unknown discrete import policy')
+    if discrete_profile_mode not in ('independent','native_batched'):
+        raise ValueError('Unknown discrete profile mode')
     if profile_bounds_policy not in ('reject','clip'):raise ValueError('Unknown analytic-profile bounds policy')
     if type(compact_density_storage) is not bool:raise ValueError('Density storage compaction must be boolean')
     if fit_policy!='workspace':
@@ -187,7 +189,8 @@ def from_workspace(workspace,datacard=None,*,data='data_obs',analytic_barlow_bee
             model=from_workspace(workspace,datacard,data=data,analytic_barlow_beeston=analytic_barlow_beeston,
                 compact_shape_data=compact_shape_data,compact_density_storage=compact_density_storage,
                 template_convention=template_convention,discrete_policy=discrete_policy,
-                cbshape_convention=cbshape_convention,profile_bounds_policy=profile_bounds_policy)
+                cbshape_convention=cbshape_convention,profile_bounds_policy=profile_bounds_policy,
+                analysis=analysis,dataset_kind=dataset_kind,discrete_profile_mode=discrete_profile_mode)
         return attach_fit_policy(model,state,ranges)
     from optparse import OptionParser
     from pathlib import Path
@@ -266,8 +269,18 @@ def from_workspace(workspace,datacard=None,*,data='data_obs',analytic_barlow_bee
         model=compose_counting(scalars,constraints,channels,offset=exported.offset,provenance=provenance)
     if discrete_policy=='profile':
         from .discrete import attach_discrete_profile
+        native_order=None
+        if discrete_profile_mode=='native_batched':
+            registered=workspace.genobj('discreteParams')
+            categories=model.metadata['components'].get('binned',{}).get('discrete_categories',[])
+            required={c['name'] for c in categories}
+            if required and not registered:
+                raise ValueError('Native discrete order is missing from workspace discreteParams')
+            native_order=[str(c.GetName()) for c in registered if str(c.GetName()) in required] if registered else []
         model=attach_discrete_profile(model,nodes,rows,scalars,
-            constraint_names=exported.constraints,compact_data=compact_shape_data)
+            constraint_names=exported.constraints,compact_data=compact_shape_data,
+            native_order=native_order,shared_shapes=discrete_profile_mode=='native_batched',
+            compact_density=compact_density_storage)
     # Evaluate the complete lowered initial objective without building an eager
     # JAX operation graph for every RooFit node. Nonfinite initial values remain
     # diagnostic values, as in the original oracle construction check.

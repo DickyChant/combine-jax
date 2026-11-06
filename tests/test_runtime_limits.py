@@ -23,6 +23,9 @@ def test_public_cli_blinding_and_combine_options():
     assert config['ranges'] == {'r':[0.,20.],'MX':[1000.,6000.]}
     assert config['no_fit_asimov'] and config['signal_strength']==0.
     assert config['float64'] and config['static_guard_gib']==8.
+    assert config['host_memory_limit_gib']==11.
+    assert request(parse('--host-memory-limit-gib','30'))['host_memory_limit_gib']==30.
+    assert request(parse('--backend','cpu','--threads','2'))['cpu_threads']==2
     with pytest.raises(ValueError,match='pre-fit only'):
         request(parse('--run','expected'))
     with pytest.raises(SystemExit):
@@ -92,7 +95,10 @@ def test_failed_batch_fit_transfers_checkpoint_without_masking_failure(tmp_path,
     checkpoint = dict(status='failed', profiles=[dict(status=0, value=12.5)],
         resources=dict(peak_rss_mib=1234.))
 
-    def stage(command, environment, log):
+    def stage(command, environment, log, *, rss_limit_mib):
+        assert rss_limit_mib==30*1024
+        if log.name != 'import.log':
+            assert environment['COMBINE_JAX_CPU_THREADS']=='2'
         if log.name == 'fit.log':
             (log.parent/'fit.json').write_text('{' if truncated else json.dumps(checkpoint))
             log.with_suffix('.resources.json').write_text(json.dumps(dict(
@@ -103,11 +109,13 @@ def test_failed_batch_fit_transfers_checkpoint_without_masking_failure(tmp_path,
 
     monkeypatch.setattr(controller, 'stage', stage)
     args = parse('--runtime', str(prefix), '--workdir', str(workdir),
-                 '--output', str(output), '--backend', 'cpu')
+                 '--output', str(output), '--backend', 'cpu','--threads','2','--host-memory-limit-gib','30')
     with pytest.raises(RuntimeError, match='original fit failure'):
         controller.run_limits(args)
     receipt = json.loads(output.with_suffix('.json').read_text())
     assert receipt['status'] == 'failed' and 'original fit failure' in receipt['error']
+    assert receipt['request']['host_memory_limit_gib']==30.
+    assert receipt['request']['cpu_threads']==2
     assert receipt['stages']['fit']['processes_at_peak'] == [dict(pid=123, rss_mib=12000.)]
     assert not output.exists()
     if truncated:

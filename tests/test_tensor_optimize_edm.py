@@ -8,9 +8,9 @@ from combine_jax.tensor.optimize import make_bfgs
 from combine_jax.tensor.fitting import make_fit_function
 
 
-@pytest.mark.parametrize('inverse_block', [0,2])
+@pytest.mark.parametrize('inverse_block,gather', [(0,False),(2,False),(2,True)])
 @pytest.mark.parametrize('offset', [0., 1.e7])
-def test_edm_coupled_quadratic_matches_exact_gap_and_counts(offset,inverse_block):
+def test_edm_coupled_quadratic_matches_exact_gap_and_counts(offset,inverse_block,gather):
     matrix = jnp.array([[17., 3., 0.], [3., 2., .1], [0., .1, .07]])
     center = jnp.array([.3, -1.7, 2.1])
     def objective(x, a):
@@ -18,7 +18,8 @@ def test_edm_coupled_quadratic_matches_exact_gap_and_counts(offset,inverse_block
         return a['offset']+.5*d@a['matrix']@d
     args = (jnp.zeros(3), dict(matrix=matrix, center=center, offset=jnp.array(offset)),
             jnp.full(3, -10.), jnp.full(3, 10.))
-    fn = make_bfgs(objective, stopping_criterion='edm', edm_tolerance=1e-4,inverse_update_block_size=inverse_block)
+    fn = make_bfgs(objective, stopping_criterion='edm', edm_tolerance=1e-4,inverse_update_block_size=inverse_block,
+        inverse_transpose_gather=gather)
     result = jax.device_get(jax.jit(fn)(*args))
     assert result['status'] == 0 and 0 <= result['estimated_edm'] < 1e-4
     d = result['x']-center

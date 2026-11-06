@@ -2,11 +2,14 @@
 import math
 from pathlib import Path
 
-from .options import assignments, ranges
+from .options import assignments, ranges, add_host_memory_option, host_memory_limit_gib
 
 
 def add_multidim_command(commands):
+    from .cpu_threads import add_threads_option
     parser = commands.add_parser('multidim', help='Asimov MultiDimFit grids and batched profile impacts')
+    add_host_memory_option(parser)
+    add_threads_option(parser)
     parser.add_argument('--workspace', '-d', type=Path, required=True)
     parser.add_argument('--datacard', type=Path)
     parser.add_argument('--poi', '--pois', '--redefineSignalPOIs', dest='poi', required=True)
@@ -78,6 +81,8 @@ def request(args):
         freeze_groups=list(filter(None, args.freezeNuisanceGroups.split(','))),
         run='expected', no_fit_asimov=True, signal_strength=values[pois[0]],
         backend=args.backend, discrete_policy=args.discrete_policy, template_convention='v10_density',
+        cpu_threads=getattr(args, 'threads', None),
         float64=True, static_guard_gib=8., seed=args.seed, r_max=None,
+        host_memory_limit_gib=host_memory_limit_gib(args.host_memory_limit_gib),
         edm_validation=args.edm_validation, global_edm_validation=args.global_edm_validation,
         robust_fit=bool(args.robustFit), runtime_definitions=runtime_definitions)

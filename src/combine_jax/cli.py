@@ -21,6 +21,8 @@ def main():
             parser.error('Implemented method dispatch: AsymptoticLimits and experimental Asimov MultiDimFit')
         argv = [methods[argv[index+1]], *argv[:index], *argv[index+2:]]
     commands = parser.add_subparsers(dest="command", required=True)
+    from .workflow_cli import add_commands,run as run_workflow
+    add_commands(commands)
     from .methods.cli import add_limit_command, run_limit
     add_limit_command(commands)
     from .runtime.options import add_limits_command
@@ -33,6 +35,12 @@ def main():
     inspect.add_argument("--data", default="data_obs")
     inspect.add_argument("--output", type=Path, required=True)
     args = parser.parse_args(argv)
+    if args.command in ('fit', 'scan', 'limit', 'limits', 'multidim'):
+        from .runtime.cpu_threads import configure_cpu_threads
+        threading = configure_cpu_threads(getattr(args, 'device', getattr(args, 'backend', 'cpu')), args.threads)
+        args.threads = threading['requested']
+    if args.command in ('import','fit','scan'):
+        return run_workflow(args)
     if args.command == 'limit':
         return run_limit(args)
     if args.command == 'limits':
