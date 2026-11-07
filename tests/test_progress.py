@@ -118,6 +118,22 @@ def test_stalled_flag_and_capped_bar():
     assert bar(0.) == '░'*12 and bar(1.) == '█'*12
 
 
+def test_repair_restarts_the_bar_and_falling_nll_is_not_stalled():
+    base = dict(value=10., edm=1., max_gradient=1., repairs=0, validating=False, active=True,
+                start=False, final=False, status=-1, budget=10**8, tolerance=1e-4, edm_criterion=True)
+    fit = Fit(dict(base, iteration=0, start=True), 0., stall_updates=3)
+    fit.update(dict(base, iteration=10, edm=1e-3), 1.)
+    assert fit.fraction() == pytest.approx(.75)
+    fit.update(dict(base, iteration=20, edm=10., repairs=1), 2.)
+    assert fit.fraction() == 0.
+    for i in range(5):
+        fit.update(dict(base, iteration=30+10*i, edm=10., repairs=1, value=9.-i), 3.+i)
+    assert not fit.stalled
+    for i in range(3):
+        fit.update(dict(base, iteration=80+10*i, edm=10., repairs=1, value=5.), 8.+i)
+    assert fit.stalled
+
+
 def test_plain_display_prints_one_line_per_finished_fit():
     out = io.StringIO()
     display = ProgressDisplay(out, mode='plain', total=2, plain_interval=1e9)
