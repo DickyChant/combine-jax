@@ -7,8 +7,10 @@ The convergence bar is the fraction of the way, in log(EDM), from the first
 EDM seen to the tolerance. It fills to the best EDM reached so far, so it does
 not jitter; the current EDM is printed next to it. It stops at 99% while the
 estimate has passed but the guard has not ("validating"), and reaches 100%
-only when the fit reports convergence. "stalled" means the best EDM has not
-improved over the last ``stall_updates`` updates. The iteration bar is shown
+only when the fit reports convergence. A guard repair resets the metric, so
+the bar restarts from the EDM after each repair. "stalled" means neither the
+best EDM nor the NLL (by more than the tolerance) has improved over the last
+``stall_updates`` updates. The iteration bar is shown
 only for capped fits; its time is an upper bound (time to the cap).
 
 In a terminal the lines are redrawn in place. Otherwise (batch logs) one plain
@@ -45,6 +47,7 @@ class Fit:
         self.stall_updates = stall_updates
         self.first = None
         self.best = math.inf
+        self.best_value = math.inf
         self.since_best = 0
         self.previous_value = None
         self.record = None
@@ -60,8 +63,12 @@ class Fit:
             if r['iteration'] > self.record['iteration'] and now > self.updated:
                 rate = (r['iteration']-self.record['iteration'])/(now-self.updated)
                 self.rate = rate if self.rate is None else .7*self.rate+.3*rate
+        repaired = self.record is not None and r['repairs'] > self.record['repairs']
         self.record, self.updated = r, now
         m = self.measure(r)
+        if repaired:
+            # The repaired metric gives a new EDM scale; measure from there.
+            self.first, self.best = None, math.inf
         if math.isfinite(m) and m > 0:
             if self.first is None:
                 self.first = m
@@ -71,6 +78,10 @@ class Fit:
                 self.since_best += 1
         elif m == 0:
             self.best = 0.
+        # An NLL still falling by more than the tolerance is progress even
+        # while the EDM estimate is noisy.
+        if r['value'] < self.best_value-r['tolerance']:
+            self.best_value, self.since_best = r['value'], 0
 
     @property
     def done(self):
