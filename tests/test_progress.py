@@ -72,6 +72,15 @@ def test_batched_fit_sends_one_record_per_update():
     assert len(records)-1 == len(range(0, int(result['iteration'].max()), 5))
 
 
+def test_missing_host_platform_fails_before_the_fit(monkeypatch):
+    def cpu_missing(backend=None):
+        raise RuntimeError('Unknown backend cpu')
+    monkeypatch.setattr(jax, 'local_devices', cpu_missing)
+    fit = make_bfgs(rosenbrock, progress_every=5)
+    with pytest.raises(RuntimeError, match='JAX_PLATFORMS=cuda,cpu'):
+        jax.jit(fit).lower(*arguments(-1.2))
+
+
 def test_task_names_are_attached_on_host():
     fn = jax.jit(make_bfgs(rosenbrock, progress_every=50))
     with progress.task('kl=1'):

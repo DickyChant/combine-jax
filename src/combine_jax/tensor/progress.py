@@ -86,9 +86,24 @@ def _make_emit():
 _emit = None
 
 
+def require_host():
+    """Fail at trace time, before a fit runs, when no host CPU platform exists.
+
+    Every JAX host callback places its inputs on a CPU device, so
+    ``JAX_PLATFORMS=cuda`` alone would crash at the first record.
+    """
+    import jax
+    try:
+        jax.local_devices(backend='cpu')
+    except RuntimeError as error:
+        raise RuntimeError('Fit progress needs the host CPU platform; add cpu to JAX_PLATFORMS '
+                           '(for example JAX_PLATFORMS=cuda,cpu)') from error
+
+
 def emit(due, record):
     """Send ``record`` (a dict of scalars) to the host when ``due`` is true."""
     global _emit
+    require_host()
     if _emit is None:
         _emit = _make_emit()
     return _emit(due, record)
