@@ -2,6 +2,7 @@
 import json
 import os
 from pathlib import Path
+import shutil
 import signal
 import socket
 import subprocess
@@ -171,7 +172,18 @@ def run_limits(args, *, method='AsymptoticLimits'):
                 from ..methods.multidim_output import write_multidim_tree as writer
             else:
                 from ..methods.root_output import write_limit_tree as writer
-            writer(output,fit['rows'],mass=args.mass,seed=args.seed,wall_seconds=elapsed)
+            if config.get('save_workspace'):
+                # Combine's layout: the limit tree and workspace w in one file. Assemble
+                # it in the workdir, so a failed save never leaves a partial output.
+                staged = workdir/output.name
+                writer(staged,fit['rows'],mass=args.mass,seed=args.seed,wall_seconds=elapsed)
+                run('save_workspace',['bash',str(module/'run_native.sh'),native,
+                    str(module/'native_save_workspace.py'),str(workdir/'native/generation.json'),
+                    str(workdir/'fit.json'),str(staged),str(workdir/'save_workspace.json')],environment)
+                report['saved_workspace'] = json.loads((workdir/'save_workspace.json').read_text())
+                shutil.move(staged,output)
+            else:
+                writer(output,fit['rows'],mass=args.mass,seed=args.seed,wall_seconds=elapsed)
             checksum = sha(output)
         report.update(status=fit['status'],fit=fit,output=str(output),output_sha256=checksum,
             total_wall_seconds=elapsed,setup_wall_seconds=sum(report['stages'][n]['wall_seconds']
@@ -182,6 +194,11 @@ def run_limits(args, *, method='AsymptoticLimits'):
             print('Expected quantiles:',[(r['quantile'],r['limit'],r['status']) for r in fit['rows']],flush=True)
         else:
             print('Asimov MultiDimFit complete:',config['algo'],flush=True)
+            if 'saved_workspace' in report:
+                saved = report['saved_workspace']
+                print('Saved workspace w with snapshot',saved['snapshot']+'; start Combine from it with:',
+                      f"combine -M MultiDimFit -d {output} -w w --snapshotName {saved['snapshot']} -D {saved['dataset']} ...",
+                      flush=True)
     except BaseException as exc:
         report.update(status='failed',error=repr(exc),total_wall_seconds=time.perf_counter()-started)
         # A batch worker's temporary directory disappears after failure. Keep

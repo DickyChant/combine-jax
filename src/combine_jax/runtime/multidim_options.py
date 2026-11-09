@@ -27,6 +27,8 @@ def add_multidim_command(commands):
     parser.add_argument('--firstPoint', type=int, default=0)
     parser.add_argument('--lastPoint', type=int)
     parser.add_argument('--saveNLL', action='store_true')
+    parser.add_argument('--saveWorkspace', action='store_true',
+                        help='Write workspace w with a MultiDimFit snapshot of the global fit, as Combine does')
     parser.add_argument('--X-rtd', action='append', default=[], dest='runtime_definitions',
                         help='Supported native convention: REMOVE_CONSTANT_ZERO_POINT=0 or 1')
     parser.add_argument('--robustFit', type=int, choices=(0, 1), default=0)
@@ -76,6 +78,10 @@ def request(args):
         if args.algo == 'impact' and (len(parameters) != 1 or parameters == pois):
             raise ValueError('Impact requires one nuisance parameter')
         points = []
+    if args.saveWorkspace and args.algo == 'batch-impacts':
+        raise ValueError('--saveWorkspace needs a single output file; batch-impacts writes a directory')
+    if args.saveWorkspace and args.discrete_policy == 'profile':
+        raise ValueError('--saveWorkspace does not yet record profiled RooMultiPdf choices')
     return dict(method='MultiDimFit', algo=args.algo, pois=pois, poi=pois[0],
         workspace=str(args.workspace.resolve()), datacard=str(args.datacard.resolve()) if args.datacard else None,
         mass=args.mass, parameters=values, ranges=bounds, points=points, impact_parameters=parameters,
@@ -88,4 +94,5 @@ def request(args):
         host_memory_limit_gib=host_memory_limit_gib(args.host_memory_limit_gib),
         edm_validation=args.edm_validation, global_edm_validation=args.global_edm_validation,
         robust_fit=bool(args.robustFit), runtime_definitions=runtime_definitions,
+        save_workspace=args.saveWorkspace,
         progress_every=progress_every(args))
