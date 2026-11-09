@@ -272,6 +272,26 @@ map. The default EDM validation uses the exact final AD Hessian. Flat global POI
 directions require an explicit `--global-edm-validation estimated` choice and
 independent validation; that choice does not certify global covariance.
 
+`--saveWorkspace` works as in Combine: the output file also holds workspace `w`
+with a `MultiDimFit` snapshot of the combine-jax global fit, and the generated
+Asimov dataset. Native Combine can then start from that fit:
+
+```bash
+combine-jax -M MultiDimFit -d workspace.root --poi r --toys -1 --setParameters r=1 \
+  --algo singles --saveWorkspace --output higgsCombineJax.MultiDimFit.mH125.0.root
+combine -M MultiDimFit -d higgsCombineJax.MultiDimFit.mH125.0.root -w w \
+  --snapshotName MultiDimFit -D combine_jax_asimov_nominal ...
+```
+
+The snapshot holds every workspace variable and category, as Combine's own does:
+fitted values for the floating parameters, unchanged nominal values for global
+observables and frozen parameters. Use `-D combine_jax_asimov_nominal` rather than
+`-t -1`, which would regenerate the Asimov from the snapshot. For a pre-fit
+Asimov the global fit is the nominal point, so the snapshot gains little there;
+it pays off for fits whose minimum is far from the starting values.
+`--saveWorkspace` is not yet available with `--discrete-policy profile` or
+`--algo batch-impacts`.
+
 The inference branch also supplies `--scan-backend jax` and
 `--impacts-backend jax`, with separate targets and unchanged merge/plot loaders:
 
