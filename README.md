@@ -329,6 +329,10 @@ source scripts/env.sh
 pytest -q tests/test_asymptotic_statistics.py tests/test_runtime_limits.py
 ```
 
+[`skills/ad-port-and-validate`](skills/ad-port-and-validate/SKILL.md) is the agent
+skill used to write the converters: how to port a RooFit/Combine model to an autodiff
+framework and prove that values and derivatives match the native reference.
+
 Legacy benchmark scripts are research utilities, not installation prerequisites.
 Agreement and performance are dataset/configuration dependent; validate each new
 model against its native reference before making a numerical or speed claim.
